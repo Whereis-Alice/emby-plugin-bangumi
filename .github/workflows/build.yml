@@ -1,0 +1,29 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # No EmbySystemDir here on purpose: CI exercises the NuGet fallback
+      # reference path (MediaBrowser.Server.Core / MediaBrowser.Common 4.9.1.90)
+      # so a broken fallback cannot slip through unnoticed.
+      - name: Build
+        run: dotnet build src/Emby.Plugins.Bangumi/Emby.Plugins.Bangumi.csproj -c Release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Emby.Plugins.Bangumi
+          path: src/Emby.Plugins.Bangumi/bin/Release/Emby.Plugins.Bangumi.dll
+          if-no-files-found: error

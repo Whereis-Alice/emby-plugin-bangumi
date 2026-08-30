@@ -1,0 +1,237 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using Emby.Plugins.Bangumi.Api;
+using Emby.Plugins.Bangumi.Utils;
+
+namespace Emby.Plugins.Bangumi.Providers
+{
+    /// <summary>One subject in a franchise chain, together with the season number its title claims.</summary>
+    internal sealed class SubjectChainEntry
+    {
+        public int Id { get; set; }
+
+        public string Name { get; set; }
+
+        public string NameCn { get; set; }
+
+        /// <summary>Season number parsed out of the title, when the title carried one.</summary>
+        public int? SeasonMarker { get; set; }
+
+        public string DisplayName
+        {
+            get
+            {
+                if (!string.IsNullOrWhiteSpace(NameCn)) return NameCn;
+                if (!string.IsNullOrWhiteSpace(Name)) return Name;
+                return Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+    }
+
+    /// <summary>Outcome of mapping an Emby season number onto Bangumi subjects.</summary>
+    internal sealed class SeasonResolution
+    {
+        public SeasonResolution(List<int> subjectIds, string matchedBy)
+        {
+            SubjectIds = subjectIds ?? new List<int>();
+            MatchedBy = matchedBy;
+        }
+
+        /// <summary>
+        /// Subjects covering the season, in air order. More than one entry means Bangumi split the
+        /// season into separate cour subjects while Emby keeps it as a single folder.
+        /// </summary>
+        public List<int> SubjectIds { get; private set; }
+
+        public int PrimaryId
+        {
+            get { return SubjectIds.Count > 0 ? SubjectIds[0] : 0; }
+        }
+
+        public string MatchedBy { get; private set; }
+
+        public string Describe()
+        {
+            return string.Join(", ", SubjectIds.Select(i => i.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray())
+                   + " (" + (MatchedBy ?? "?") + ")";
+        }
+    }
+
+    /// <summary>
+    /// Bangumi has no season concept: every cour is a standalone subject linked to the previous one
+    /// through a <c>续集</c> relation. Turning an Emby season number into the right subject therefore
+    /// means walking that chain, and the walk cannot simply count hops.
+    ///
+    /// Measured counter example, the Re:Zero chain:
+    /// 140001 (season 1) -> 278826 (第二季) -> 316247 (第二季 後半) -> 425998 (第三季 襲撃編) -> ...
+    /// Hop counting puts season 3 on the second half of season 2. What actually works is reading the
+    /// season number out of each subject title, and then absorbing the immediately following subjects
+    /// that are the same season split into another cour.
+    /// </summary>
+    internal static class BangumiSeasonResolver
+    {
+        public const string SequelRelation = "续集";
+
+        /// <summary>Hard stop for chain walking. No anime franchise on Bangumi is deeper than this.</summary>
+        private const int MaxChainDepth = 16;
+
+        /// <summary>A season is allowed to span at most this many Bangumi subjects.</summary>
+        private const int MaxSubjectsPerSeason = 3;
+
+        /// <summary>
+        /// Titles that mark a subject as another slice of the same season rather than a new one.
+        /// Used only when the follow up subject carries no season number of its own, so a missing
+        /// marker cannot silently merge a genuinely different season.
+        /// </summary>
+        private static readonly Regex SplitCourHint = new Regex(
+            @"(?:後半|后半|前半|後編|後篇|后篇|前編|前篇|第\s*[0-9０-９一二三四五六七八九]+\s*(?:クール|cour)|" +
+            @"2nd\s*cour|second\s*cour|part\s*(?:2|two|ii|２)|後期|后期|下巻|下卷|下半)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Walks the <c>续集</c> chain starting at <paramref name="rootId"/>. The root itself is the
+        /// first element. Cycles are impossible to rule out in user edited data, hence the visited set.
+        /// </summary>
+        public static async Task<List<SubjectChainEntry>> BuildChainAsync(
+            BangumiApiClient api, int rootId, CancellationToken cancellationToken)
+        {
+            var chain = new List<SubjectChainEntry>();
+            if (api == null || rootId <= 0) return chain;
+
+            var visited = new HashSet<int>();
+            visited.Add(rootId);
+
+            var root = await api.GetSubjectAsync(rootId, cancellationToken).ConfigureAwait(false);
+            chain.Add(root == null
+                ? new SubjectChainEntry { Id = rootId }
+                : Entry(root.Id, root.Name, root.NameCn));
+
+            var currentId = rootId;
+            for (var depth = 0; depth < MaxChainDepth; depth++)
+            {
+                var related = await api.GetRelatedSubjectsAsync(currentId, cancellationToken).ConfigureAwait(false);
+                if (related == null) break;
+
+                // Ordering by id approximates air order: the related-subjects endpoint returns no
+                // dates, and Bangumi ids grow monotonically with registration time.
+                var next = related
+                    .Where(r => r != null && r.Id > 0 &&
+                                r.Type == BangumiConstants.SubjectType.Anime &&
+                                string.Equals(r.Relation, SequelRelation, StringComparison.Ordinal) &&
+                                !visited.Contains(r.Id))
+                    .OrderBy(r => r.Id)
+                    .FirstOrDefault();
+
+                if (next == null) break;
+
+                visited.Add(next.Id);
+                chain.Add(Entry(next.Id, next.Name, next.NameCn));
+                currentId = next.Id;
+            }
+
+            return chain;
+        }
+
+        /// <summary>Reads a season number out of either title. The Chinese title wins when both carry one.</summary>
+        public static int? SeasonMarkerOf(string name, string nameCn)
+        {
+            int? marker;
+            TitleNormalizer.StripSeason(nameCn, out marker);
+            if (marker.HasValue) return marker;
+
+            TitleNormalizer.StripSeason(name, out marker);
+            return marker;
+        }
+
+        /// <summary>
+        /// Finds the subject whose title claims <paramref name="seasonNumber"/>, plus any directly
+        /// following subjects that are the same season in another cour. Returns null when no title
+        /// in the chain claims that season.
+        /// </summary>
+        public static SeasonResolution ResolveFromChain(List<SubjectChainEntry> chain, int seasonNumber)
+        {
+            if (chain == null || chain.Count == 0) return null;
+
+            var index = chain.FindIndex(e => e != null && e.SeasonMarker.HasValue && e.SeasonMarker.Value == seasonNumber);
+            if (index < 0) return null;
+
+            return Collect(chain, index, "chain marker");
+        }
+
+        /// <summary>
+        /// Last resort: treat the chain as a plain season list. Correct for the common case of one
+        /// subject per season, wrong whenever a season was split, which is why it runs last.
+        /// </summary>
+        public static SeasonResolution ResolveByOrdinal(List<SubjectChainEntry> chain, int seasonNumber)
+        {
+            if (seasonNumber < 1) return null;
+            return ResolveAt(chain, seasonNumber - 1, "chain ordinal");
+        }
+
+        /// <summary>Takes the subject at <paramref name="index"/> plus any following cour of the same season.</summary>
+        public static SeasonResolution ResolveAt(List<SubjectChainEntry> chain, int index, string matchedBy)
+        {
+            if (chain == null || index < 0 || index >= chain.Count) return null;
+            return Collect(chain, index, matchedBy);
+        }
+
+        /// <summary>
+        /// Subjects to search for an episode of a season whose primary subject is
+        /// <paramref name="startId"/>. Emby keeps a 25 episode season in one folder even when Bangumi
+        /// filed it as 13 + 12, so the following cour subjects have to be searched too.
+        /// </summary>
+        public static async Task<List<int>> BuildEpisodeCandidatesAsync(
+            BangumiApiClient api, int startId, CancellationToken cancellationToken)
+        {
+            var chain = await BuildChainAsync(api, startId, cancellationToken).ConfigureAwait(false);
+            if (chain.Count == 0) return new List<int> { startId };
+            return Collect(chain, 0, "episode candidates").SubjectIds;
+        }
+
+        private static SeasonResolution Collect(List<SubjectChainEntry> chain, int index, string matchedBy)
+        {
+            var primary = chain[index];
+            var ids = new List<int> { primary.Id };
+
+            for (var i = index + 1; i < chain.Count && ids.Count < MaxSubjectsPerSeason; i++)
+            {
+                if (!IsSameSeason(chain[i], primary.SeasonMarker)) break;
+                ids.Add(chain[i].Id);
+            }
+
+            return new SeasonResolution(ids, matchedBy);
+        }
+
+        private static bool IsSameSeason(SubjectChainEntry candidate, int? primaryMarker)
+        {
+            if (candidate == null) return false;
+
+            if (candidate.SeasonMarker.HasValue)
+            {
+                return primaryMarker.HasValue && candidate.SeasonMarker.Value == primaryMarker.Value;
+            }
+
+            return HasSplitCourHint(candidate.Name) || HasSplitCourHint(candidate.NameCn);
+        }
+
+        private static bool HasSplitCourHint(string title)
+        {
+            return !string.IsNullOrWhiteSpace(title) && SplitCourHint.IsMatch(title);
+        }
+
+        private static SubjectChainEntry Entry(int id, string name, string nameCn)
+        {
+            return new SubjectChainEntry
+            {
+                Id = id,
+                Name = name,
+                NameCn = nameCn,
+                SeasonMarker = SeasonMarkerOf(name, nameCn),
+            };
+        }
+    }
+}

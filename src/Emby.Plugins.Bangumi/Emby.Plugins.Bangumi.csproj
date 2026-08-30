@@ -1,0 +1,77 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Emby.Plugins.Bangumi</AssemblyName>
+    <RootNamespace>Emby.Plugins.Bangumi</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <Version>1.0.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Product>Emby Bangumi</Product>
+    <Company>Whereis-Alice</Company>
+    <Description>Bangumi (bgm.tv) metadata provider for Emby Server</Description>
+  </PropertyGroup>
+
+  <!--
+    Reference resolution, in priority order:
+      1. -p:EmbySystemDir=<path>  (MSBuild property)
+      2. EMBY_SYSTEM_DIR          (environment variable, auto-imported by MSBuild)
+      3. NuGet packages           (MediaBrowser.Server.Core + MediaBrowser.Common)
+
+    Referencing the DLLs of the exact server you deploy to guarantees ABI match.
+    The NuGet path exists so that CI can build without an Emby install; it may
+    lag behind the newest server release.
+  -->
+  <PropertyGroup Condition=" '$(EmbySystemDir)' == '' ">
+    <EmbySystemDir>$(EMBY_SYSTEM_DIR)</EmbySystemDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <EmbyRefsFromDisk>false</EmbyRefsFromDisk>
+    <EmbyRefsFromDisk Condition=" '$(EmbySystemDir)' != '' AND Exists('$(EmbySystemDir)/MediaBrowser.Controller.dll') ">true</EmbyRefsFromDisk>
+  </PropertyGroup>
+
+  <ItemGroup Condition=" '$(EmbyRefsFromDisk)' == 'true' ">
+    <Reference Include="MediaBrowser.Common">
+      <HintPath>$(EmbySystemDir)/MediaBrowser.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MediaBrowser.Controller">
+      <HintPath>$(EmbySystemDir)/MediaBrowser.Controller.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MediaBrowser.Model">
+      <HintPath>$(EmbySystemDir)/MediaBrowser.Model.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Emby.Web.GenericEdit">
+      <HintPath>$(EmbySystemDir)/Emby.Web.GenericEdit.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Emby.Media.Model">
+      <HintPath>$(EmbySystemDir)/Emby.Media.Model.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition=" '$(EmbyRefsFromDisk)' != 'true' ">
+    <!-- MediaBrowser.Common ships MediaBrowser.Model + Emby.Web.GenericEdit + Emby.Media.Model -->
+    <PackageReference Include="MediaBrowser.Common" Version="4.9.1.90" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="MediaBrowser.Server.Core" Version="4.9.1.90" PrivateAssets="all" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <Target Name="ReportEmbyRefs" BeforeTargets="ResolveReferences">
+    <Message Importance="high" Condition=" '$(EmbyRefsFromDisk)' == 'true' " Text="Emby refs: local server at $(EmbySystemDir)" />
+    <Message Importance="high" Condition=" '$(EmbyRefsFromDisk)' != 'true' " Text="Emby refs: NuGet 4.9.1.90 (set EmbySystemDir / EMBY_SYSTEM_DIR for an exact ABI match)" />
+  </Target>
+
+</Project>
