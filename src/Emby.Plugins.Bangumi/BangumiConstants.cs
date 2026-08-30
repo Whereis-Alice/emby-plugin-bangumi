@@ -22,11 +22,19 @@ namespace Emby.Plugins.Bangumi
         /// <summary>Provider id key for a Bangumi person id.</summary>
         public const string PersonProviderId = "BangumiPerson";
 
+        /// <summary>
+        /// Provider id key for a Bangumi character id. Characters and persons are separate id
+        /// spaces on Bangumi - character 531 and person 531 are unrelated - so a character backed
+        /// Emby person must never be stored under <see cref="PersonProviderId"/>.
+        /// </summary>
+        public const string CharacterProviderId = "BangumiCharacter";
+
         public const string DefaultApiBaseUrl = "https://api.bgm.tv";
 
         public const string SubjectUrlFormat = "https://bgm.tv/subject/{0}";
         public const string EpisodeUrlFormat = "https://bgm.tv/ep/{0}";
         public const string PersonUrlFormat = "https://bgm.tv/person/{0}";
+        public const string CharacterUrlFormat = "https://bgm.tv/character/{0}";
 
         /// <summary>
         /// Bangumi blocks requests carrying a generic user agent (curl, python-requests, .NET default, ...)

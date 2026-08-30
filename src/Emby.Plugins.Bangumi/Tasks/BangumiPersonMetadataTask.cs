@@ -50,7 +50,7 @@ namespace Emby.Plugins.Bangumi.Tasks
 
         public string Description =>
             "为 Bangumi 刮削出来的声优与制作人员补上简介、生日、出生地和头像。" +
-            "只处理带 Bangumi 人物 id 且人物页还是空白的条目，已有的内容不会被覆盖。";
+            "只处理带 Bangumi 人物 id 或角色 id、且人物页还是空白的条目，已有的内容不会被覆盖。";
 
         public bool IsEnabled => Plugin.CurrentOptions().ImportPersonMetadata;
 
@@ -194,9 +194,13 @@ namespace Emby.Plugins.Bangumi.Tasks
 
                 if (person.ProviderIds == null) continue;
 
-                string bangumiId;
-                if (!person.ProviderIds.TryGetValue(BangumiConstants.PersonProviderId, out bangumiId)) continue;
-                if (string.IsNullOrWhiteSpace(bangumiId)) continue;
+                // Rows standing in for a role with no registered voice actor are keyed by character
+                // id instead, and their pages are just as empty until they get refreshed.
+                if (!HasBangumiId(person, BangumiConstants.PersonProviderId) &&
+                    !HasBangumiId(person, BangumiConstants.CharacterProviderId))
+                {
+                    continue;
+                }
 
                 var needsOverview = string.IsNullOrWhiteSpace(person.Overview);
                 var needsPortrait = options.PersonTaskRetryMissingPortraits
@@ -209,6 +213,12 @@ namespace Emby.Plugins.Bangumi.Tasks
             }
 
             return pending;
+        }
+
+        private static bool HasBangumiId(Person person, string key)
+        {
+            string value;
+            return person.ProviderIds.TryGetValue(key, out value) && !string.IsNullOrWhiteSpace(value);
         }
     }
 }

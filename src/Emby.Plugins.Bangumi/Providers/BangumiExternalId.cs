@@ -82,4 +82,31 @@ namespace Emby.Plugins.Bangumi.Providers
             return item is Person;
         }
     }
+
+    /// <summary>
+    /// Bangumi character id. Characters and persons are separate id spaces, and rows created for a
+    /// role with no registered voice actor are backed by a character, so they need their own link.
+    /// </summary>
+    public class BangumiCharacterExternalId : IExternalId
+    {
+        public string Name
+        {
+            get { return BangumiConstants.PluginName + " Character"; }
+        }
+
+        public string Key
+        {
+            get { return BangumiConstants.CharacterProviderId; }
+        }
+
+        public string UrlFormatString
+        {
+            get { return BangumiConstants.CharacterUrlFormat; }
+        }
+
+        public bool Supports(IHasProviderIds item)
+        {
+            return item is Person;
+        }
+    }
 }

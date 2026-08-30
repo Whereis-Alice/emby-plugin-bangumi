@@ -1246,13 +1246,15 @@ namespace Emby.Plugins.Bangumi.Providers
             CancellationToken cancellationToken)
         {
             var cast = new List<PersonInfo>();
-            var characters = await Api.GetSubjectCharactersAsync(subjectId, cancellationToken).ConfigureAwait(false);
+            var characters = await FetchCharactersAsync(subjectId, options, cancellationToken)
+                .ConfigureAwait(false);
             if (characters == null) return cast;
 
             // OrderBy is a stable sort, so 主角 before 配角 before 客串 while keeping Bangumi's
             // own order (which is roughly billing order) inside each group.
             var ordered = characters
-                .Where(c => c != null && c.Actors != null && c.Actors.Count > 0)
+                .Where(c => c != null && (HasActors(c) ||
+                                         (options.ImportCharactersWithoutActors && c.Type == CharacterEntityType)))
                 .OrderBy(c => RelationRank(c.Relation))
                 .ToList();
 
@@ -1262,6 +1264,36 @@ namespace Emby.Plugins.Bangumi.Providers
             {
                 var role = await ResolveCharacterNameAsync(character, options, lookups, cancellationToken)
                     .ConfigureAwait(false);
+
+                if (!HasActors(character))
+                {
+                    // Bangumi routinely registers a character without saying who voices it, and on
+                    // some subjects that is most of the cast (9 of the 21 characters of 水星领航员 The
+                    // AVVENIRE). Dropping those rows loses the roles entirely, so the character stands
+                    // in for itself: the name is the character, the role is its billing.
+                    if (string.IsNullOrWhiteSpace(role)) continue;
+
+                    var uncredited = new PersonInfo
+                    {
+                        Name = role,
+                        Type = PersonType.Actor,
+                        Role = string.IsNullOrWhiteSpace(character.Relation) ? null : character.Relation.Trim(),
+                        ImageUrl = character.Images == null ? null : character.Images.Thumbnail(),
+                    };
+
+                    if (character.Id > 0)
+                    {
+                        // Character ids and person ids are separate spaces on Bangumi, so this must
+                        // never be stored as a person id or the person provider resolves a stranger.
+                        uncredited.ProviderIds[BangumiConstants.CharacterProviderId] =
+                            character.Id.ToString(CultureInfo.InvariantCulture);
+                    }
+
+                    // Deliberately not added to castKeys: those keys are matched against staff ids and
+                    // names, and a character name colliding with a staff name would drop a real credit.
+                    cast.Add(uncredited);
+                    continue;
+                }
 
                 foreach (var actor in character.Actors)
                 {
@@ -1314,7 +1346,7 @@ namespace Emby.Plugins.Bangumi.Providers
             CancellationToken cancellationToken)
         {
             var crew = new List<PersonInfo>();
-            var staff = await Api.GetSubjectPersonsAsync(subjectId, cancellationToken).ConfigureAwait(false);
+            var staff = await FetchPersonsAsync(subjectId, options, cancellationToken).ConfigureAwait(false);
             if (staff == null) return crew;
 
             var blocked = ParseCsvSet(options.StaffRelationBlocklist);
@@ -1558,6 +1590,110 @@ namespace Emby.Plugins.Bangumi.Providers
         }
 
         private const int MaxRoleLength = 160;
+
+        // ------------------------------------------------------------ franchise inheritance
+
+        /// <summary>Bangumi character type 1 is a person; 2 机体 / 3 舰船 / 4 组织 are not.</summary>
+        private const int CharacterEntityType = 1;
+
+        /// <summary>
+        /// How many franchise siblings may be probed for a cast list. The chain of a long running
+        /// franchise is dozens of subjects long and every probe is a request, so only the immediate
+        /// neighbourhood is worth asking.
+        /// </summary>
+        private const int MaxInheritCandidates = 4;
+
+        private static bool HasActors(BangumiRelatedCharacter character)
+        {
+            return character != null && character.Actors != null && character.Actors.Count > 0;
+        }
+
+        /// <summary>
+        /// A season split by year frequently registers no cast of its own - 仙逆 年番3 (630676)
+        /// returns zero characters while all 79 of its staff credits are present - which would
+        /// publish a blank cast list. Only when the subject itself has nothing, the nearest sibling
+        /// of the same franchise is borrowed.
+        /// </summary>
+        private async Task<List<BangumiRelatedCharacter>> FetchCharactersAsync(
+            int subjectId, PluginOptions options, CancellationToken cancellationToken)
+        {
+            var characters = await Api.GetSubjectCharactersAsync(subjectId, cancellationToken).ConfigureAwait(false);
+            if (!options.InheritPeopleFromFranchise) return characters;
+            if (characters != null && characters.Count > 0) return characters;
+
+            var candidates = await FranchiseFallbackIdsAsync(subjectId, cancellationToken).ConfigureAwait(false);
+            foreach (var candidateId in candidates)
+            {
+                var inherited = await Api.GetSubjectCharactersAsync(candidateId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (inherited == null || inherited.Count == 0) continue;
+
+                Verbose(
+                    "Bangumi subject {0} lists no characters; inheriting {1} from franchise subject {2}",
+                    subjectId, inherited.Count, candidateId);
+                return inherited;
+            }
+
+            return characters;
+        }
+
+        /// <summary>
+        /// Same fallback as <see cref="FetchCharactersAsync"/>, decided independently: a subject can
+        /// perfectly well have complete staff and no characters, or the other way round.
+        /// </summary>
+        private async Task<List<BangumiRelatedPerson>> FetchPersonsAsync(
+            int subjectId, PluginOptions options, CancellationToken cancellationToken)
+        {
+            var staff = await Api.GetSubjectPersonsAsync(subjectId, cancellationToken).ConfigureAwait(false);
+            if (!options.InheritPeopleFromFranchise) return staff;
+            if (staff != null && staff.Count > 0) return staff;
+
+            var candidates = await FranchiseFallbackIdsAsync(subjectId, cancellationToken).ConfigureAwait(false);
+            foreach (var candidateId in candidates)
+            {
+                var inherited = await Api.GetSubjectPersonsAsync(candidateId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (inherited == null || inherited.Count == 0) continue;
+
+                Verbose(
+                    "Bangumi subject {0} lists no staff; inheriting {1} from franchise subject {2}",
+                    subjectId, inherited.Count, candidateId);
+                return inherited;
+            }
+
+            return staff;
+        }
+
+        /// <summary>
+        /// Franchise siblings of <paramref name="subjectId"/>, nearest first. Ties go to the earlier
+        /// subject, because the first season is where a franchise actually gets its cast filled in.
+        /// </summary>
+        private async Task<List<int>> FranchiseFallbackIdsAsync(int subjectId, CancellationToken cancellationToken)
+        {
+            var fallback = new List<int>();
+            var chain = await BangumiSeasonResolver.BuildFranchiseChainAsync(Api, subjectId, cancellationToken)
+                .ConfigureAwait(false);
+            if (chain == null || chain.Count < 2) return fallback;
+
+            var self = chain.IndexOf(subjectId);
+            if (self < 0) return fallback;
+
+            var ordered = chain
+                .Select((id, position) => new { Id = id, Position = position })
+                .Where(e => e.Position != self && e.Id > 0)
+                .OrderBy(e => Math.Abs(e.Position - self))
+                .ThenBy(e => e.Position)
+                .ToList();
+
+            foreach (var entry in ordered)
+            {
+                if (fallback.Contains(entry.Id)) continue;
+                fallback.Add(entry.Id);
+                if (fallback.Count >= MaxInheritCandidates) break;
+            }
+
+            return fallback;
+        }
 
         /// <summary>
         /// The subject-level character list carries the Japanese name only; the Chinese rendering

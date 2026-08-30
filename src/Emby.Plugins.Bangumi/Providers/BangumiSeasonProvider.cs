@@ -133,6 +133,14 @@ namespace Emby.Plugins.Bangumi.Providers
 
             if (subject.Images != null) result.SearchImageUrl = subject.Images.Best();
 
+            // A season page has its own cast area, and a sequel season has its own cast: filling it
+            // from the season subject is the only way The NATURAL and The AVVENIRE stop showing the
+            // first season crew. Season 1 resolves to the series subject and therefore adds nothing new.
+            if (options.ImportSeasonPeople)
+            {
+                await ApplyPeopleAsync(result, subject.Id, options, cancellationToken).ConfigureAwait(false);
+            }
+
             result.HasMetadata = true;
             return result;
         }

@@ -35,6 +35,16 @@ namespace Emby.Plugins.Bangumi.Providers
 
             var options = CurrentOptions;
 
+            int characterId;
+            if (TryGetId(searchInfo.ProviderIds, BangumiConstants.CharacterProviderId, out characterId))
+            {
+                // Rows created for an uncredited role point at /v0/characters/{id}; searching the
+                // person index for that name would offer real people who merely share the string.
+                var character = await Api.GetCharacterAsync(characterId, cancellationToken).ConfigureAwait(false);
+                if (character != null) results.Add(ToSearchResult(character, options));
+                return results;
+            }
+
             int personId;
             if (TryGetId(searchInfo.ProviderIds, BangumiConstants.PersonProviderId, out personId))
             {
@@ -74,6 +84,15 @@ namespace Emby.Plugins.Bangumi.Providers
             };
 
             if (info == null || !options.ImportPersonMetadata) return result;
+
+            int characterId;
+            if (TryGetId(info.ProviderIds, BangumiConstants.CharacterProviderId, out characterId))
+            {
+                // Must return unconditionally: falling through to the person search would look the
+                // role name up in an unrelated id space and confidently attach a stranger.
+                return await BuildCharacterResultAsync(result, info, characterId, options, cancellationToken)
+                    .ConfigureAwait(false);
+            }
 
             BangumiPersonDetail detail = null;
 
@@ -135,6 +154,142 @@ namespace Emby.Plugins.Bangumi.Providers
         }
 
         /// <summary>
+        /// Person page for a role Bangumi lists without a voice actor. /v0/characters/{id} is a
+        /// separate endpoint over a separate id space and carries no career or death date, so it gets
+        /// its own mapping instead of being squeezed through the person path.
+        /// </summary>
+        private async Task<MetadataResult<Person>> BuildCharacterResultAsync(
+            MetadataResult<Person> result,
+            PersonLookupInfo info,
+            int characterId,
+            PluginOptions options,
+            CancellationToken cancellationToken)
+        {
+            var detail = await Api.GetCharacterAsync(characterId, cancellationToken).ConfigureAwait(false);
+            if (detail == null)
+            {
+                Verbose("Bangumi character {0} could not be loaded", characterId);
+                return result;
+            }
+
+            result.QueriedById = true;
+
+            var chinese = detail.ChineseName();
+            var preferred = options.PreferChineseTitle && !string.IsNullOrWhiteSpace(chinese)
+                ? chinese
+                : detail.Name;
+
+            result.Item.Name = string.IsNullOrWhiteSpace(info.Name) ? preferred : info.Name;
+            if (!string.IsNullOrWhiteSpace(detail.Name)) result.Item.OriginalTitle = detail.Name;
+
+            result.Item.Overview = BuildCharacterBiography(detail);
+
+            // Fictional birthdays are usually month and day only, which BirthDate() rejects because
+            // Emby cannot store a partial date; the readable form still reaches the biography.
+            var birth = detail.BirthDate();
+            if (birth.HasValue)
+            {
+                result.Item.PremiereDate = birth;
+                result.Item.ProductionYear = birth.Value.Year;
+            }
+
+            if (detail.Images != null) result.SearchImageUrl = detail.Images.Best();
+
+            result.Item.ProviderIds[BangumiConstants.CharacterProviderId] =
+                detail.Id.ToString(CultureInfo.InvariantCulture);
+
+            result.HasMetadata = true;
+            Verbose("Bangumi character matched {0} ({1})", detail.Id, detail.Name);
+            return result;
+        }
+
+        /// <summary>Character infobox facts, in the order a character page reads best.</summary>
+        private static string BuildCharacterBiography(BangumiCharacterDetail detail)
+        {
+            var facts = new List<string>();
+
+            var gender = GenderText(BangumiInfobox.First(detail.Infobox, "性别"), detail.Gender);
+            if (!string.IsNullOrWhiteSpace(gender)) facts.Add("性别：" + gender);
+
+            var birthday = detail.BirthDateText();
+            if (!string.IsNullOrWhiteSpace(birthday)) facts.Add("生日：" + birthday);
+
+            foreach (var key in new[] { "身高", "体重", "血型", "星座", "职业", "所属", "声优" })
+            {
+                var value = BangumiInfobox.First(detail.Infobox, key);
+                if (!string.IsNullOrWhiteSpace(value)) facts.Add(key + "：" + value);
+            }
+
+            var bloodType = BloodTypeText(detail.BloodType);
+            if (!string.IsNullOrWhiteSpace(bloodType) &&
+                string.IsNullOrWhiteSpace(BangumiInfobox.First(detail.Infobox, "血型")))
+            {
+                facts.Add("血型：" + bloodType);
+            }
+
+            var aliases = detail.Aliases()
+                .Where(alias => !string.Equals(alias, detail.Name, StringComparison.Ordinal))
+                .Take(6)
+                .ToList();
+            if (aliases.Count > 0) facts.Add("别名：" + string.Join("、", aliases));
+
+            var builder = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(detail.Summary)) builder.Append(detail.Summary.Trim());
+
+            if (facts.Count > 0)
+            {
+                if (builder.Length > 0) builder.Append("\n\n");
+                builder.Append(string.Join("\n", facts));
+            }
+
+            return builder.Length == 0 ? null : builder.ToString();
+        }
+
+        /// <summary>Infobox wins over the API field, which is the untranslated male / female.</summary>
+        private static string GenderText(string fromInfobox, string apiValue)
+        {
+            if (!string.IsNullOrWhiteSpace(fromInfobox)) return fromInfobox;
+            if (string.IsNullOrWhiteSpace(apiValue)) return null;
+            if (string.Equals(apiValue, "male", StringComparison.OrdinalIgnoreCase)) return "男";
+            if (string.Equals(apiValue, "female", StringComparison.OrdinalIgnoreCase)) return "女";
+            return apiValue;
+        }
+
+        private static string BloodTypeText(int? bloodType)
+        {
+            if (!bloodType.HasValue) return null;
+            switch (bloodType.Value)
+            {
+                case 1: return "A";
+                case 2: return "B";
+                case 3: return "AB";
+                case 4: return "O";
+                default: return null;
+            }
+        }
+
+        private static RemoteSearchResult ToSearchResult(BangumiCharacterDetail character, PluginOptions options)
+        {
+            var chinese = character.ChineseName();
+            var result = new RemoteSearchResult
+            {
+                Name = options.PreferChineseTitle && !string.IsNullOrWhiteSpace(chinese)
+                    ? chinese
+                    : character.Name,
+                SearchProviderName = BangumiConstants.PluginName,
+                Overview = character.Summary,
+                ImageUrl = character.Images == null ? null : character.Images.Thumbnail(),
+            };
+
+            if (!string.IsNullOrWhiteSpace(character.Name)) result.OriginalTitle = character.Name;
+
+            result.ProviderIds[BangumiConstants.CharacterProviderId] =
+                character.Id.ToString(CultureInfo.InvariantCulture);
+
+            return result;
+        }
+
+        /// <summary>
         /// Bangumi's person search is a substring match with no ranking, and a wrong voice actor is
         /// worse than none, so only an exact hit on the name or one of its documented aliases counts.
         /// </summary>
@@ -168,14 +323,7 @@ namespace Emby.Plugins.Bangumi.Providers
         {
             var facts = new List<string>();
 
-            var gender = BangumiInfobox.First(detail.Infobox, "性别");
-            if (string.IsNullOrWhiteSpace(gender) && !string.IsNullOrWhiteSpace(detail.Gender))
-            {
-                gender = string.Equals(detail.Gender, "male", StringComparison.OrdinalIgnoreCase) ? "男"
-                    : string.Equals(detail.Gender, "female", StringComparison.OrdinalIgnoreCase) ? "女"
-                    : detail.Gender;
-            }
-
+            var gender = GenderText(BangumiInfobox.First(detail.Infobox, "性别"), detail.Gender);
             if (!string.IsNullOrWhiteSpace(gender)) facts.Add("性别：" + gender);
 
             var birthday = detail.BirthDateText();
@@ -288,13 +436,32 @@ namespace Emby.Plugins.Bangumi.Providers
             var images = new List<RemoteImageInfo>();
             if (item == null) return images;
 
+            BangumiImages source = null;
+            var label = "person";
+            var id = 0;
+
             int personId;
-            if (!TryGetId(item.ProviderIds, BangumiConstants.PersonProviderId, out personId)) return images;
+            if (TryGetId(item.ProviderIds, BangumiConstants.PersonProviderId, out personId))
+            {
+                var person = await Api.GetPersonAsync(personId, cancellationToken).ConfigureAwait(false);
+                if (person != null) source = person.Images;
+                id = personId;
+            }
 
-            var detail = await Api.GetPersonAsync(personId, cancellationToken).ConfigureAwait(false);
-            if (detail == null || detail.Images == null) return images;
+            int characterId;
+            if (source == null && TryGetId(item.ProviderIds, BangumiConstants.CharacterProviderId, out characterId))
+            {
+                // Rows standing in for an uncredited role are backed by a character, whose portrait
+                // lives behind a different endpoint.
+                var character = await Api.GetCharacterAsync(characterId, cancellationToken).ConfigureAwait(false);
+                if (character != null) source = character.Images;
+                label = "character";
+                id = characterId;
+            }
 
-            var url = detail.Images.Best();
+            if (source == null) return images;
+
+            var url = source.Best();
             if (string.IsNullOrWhiteSpace(url)) return images;
 
             images.Add(new RemoteImageInfo
@@ -302,10 +469,10 @@ namespace Emby.Plugins.Bangumi.Providers
                 ProviderName = BangumiConstants.PluginName,
                 Type = ImageType.Primary,
                 Url = url,
-                ThumbnailUrl = detail.Images.Thumbnail(),
+                ThumbnailUrl = source.Thumbnail(),
             });
 
-            Verbose("Bangumi person {0}: offering portrait {1}", personId, url);
+            Verbose("Bangumi {0} {1}: offering portrait {2}", label, id, url);
             return images;
         }
     }

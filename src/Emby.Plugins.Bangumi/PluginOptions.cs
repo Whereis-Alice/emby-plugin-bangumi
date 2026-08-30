@@ -132,6 +132,18 @@ namespace Emby.Plugins.Bangumi
         [Description("把声优导入为「演员」，角色名填写其配音的角色（取自 /v0/subjects/{id}/characters）。")]
         public bool ImportVoiceActors { get; set; } = true;
 
+        [DisplayName("导入没有声优的角色")]
+        [Description("Bangumi 常有登记了角色却没登记声优的条目（水星领航员 The AVVENIRE 21 个角色里 9 个没有声优）。关闭时这些角色直接丢失；开启后角色本身作为一条「演员」导入，姓名是角色名、角色名写 主角 / 配角 / 客串，头像用角色图，并带上可点回 bgm.tv/character 的 id。只导入 type=1 的角色，机体 / 舰船 / 组织不导入。")]
+        public bool ImportCharactersWithoutActors { get; set; } = true;
+
+        [DisplayName("分季也写入人员")]
+        [Description("Emby 的季页面有独立的演职人员区，默认是空的。开启后每一季按它自己对应的 Bangumi 条目写入角色与制作人员，续集季（水星领航员 The NATURAL / The AVVENIRE）因此能拿到自己那一季的演员表，而不是只显示第一季的。第 1 季与剧集条目相同，不会产生重复人物，只是多一轮请求。")]
+        public bool ImportSeasonPeople { get; set; } = true;
+
+        [DisplayName("人员为空时沿系列继承")]
+        [Description("按年拆分的长番，后续条目常常一个角色都没登记（仙逆 年番3 的 /characters 返回 0 条），照搬就是一张空白演员表。开启后仅在返回为空时，沿「前传 / 续集」关系找最近的、同一系列里有数据的条目取用；角色和制作人员各自独立判断。")]
+        public bool InheritPeopleFromFranchise { get; set; } = true;
+
         [DisplayName("未识别职位的处理")]
         [Description("Emby 只有 8 种人员类型，装不下 Bangumi 的全部职位。Producer：把作画监督 / 人物设定 / 色彩设计 这类职位导入为「制作人」，职位原文写进角色名（推荐，信息不丢）。GuestStar：导入为客串，会显示在演员区。Skip：只导入能精确映射的职位。")]
         public UnmappedStaffMode UnmappedStaff { get; set; } = UnmappedStaffMode.Producer;
