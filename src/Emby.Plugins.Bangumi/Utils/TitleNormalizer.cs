@@ -145,6 +145,36 @@ namespace Emby.Plugins.Bangumi.Utils
             new Regex(@"\s*[-–—]\s*\d{1,4}\s*[-~]\s*\d{1,4}\s*$", RegexOptions.Compiled),
         };
 
+        // A bare number at the very end. Emby reads this fine on its own in most layouts, so it is
+        // only reached for names it already gave up on, e.g. "【2月】名侦探光之美少女！ 29".
+        private static readonly Regex TrailingBareNumber = new Regex(
+            @"(?:^|[\s\.\-_\[\(【])(?<n>\d{1,4})(?:[vV]\d)?\s*$", RegexOptions.Compiled);
+
+        // Bracket-heavy release names where Emby's own resolver gives up entirely, e.g.
+        // "[GM-Team][国漫][诛仙 第4季][Jade Dynasty Ⅳ][2026][01][HEVC][GB][4K]". The episode number is
+        // a bracket block that contains nothing but the number.
+        private static readonly Regex BracketedNumber = new Regex(
+            @"[\[【]\s*(?<n>\d{1,4})\s*[\]】]", RegexOptions.Compiled);
+
+        // Applied in order, and only to a name Emby failed to number. Anchored loosely on purpose:
+        // unlike EpisodeMarkers these do not have to sit at the end of the name.
+        private static readonly Regex[] EpisodeNumberPatterns =
+        {
+            new Regex(@"[Ss]\d{1,2}\s*[Ee](?<n>\d{1,4})(?![\d])", RegexOptions.Compiled),
+            new Regex(@"第\s*(?<n>\d{1,4})\s*[话話集回]", RegexOptions.Compiled),
+            new Regex(@"(?:^|[\s\.\-_\[\(])[Ee][Pp]?\s*(?<n>\d{1,4})(?:[vV]\d)?(?![\d])", RegexOptions.Compiled),
+            new Regex(@"[\-–—]\s*(?<n>\d{1,4})(?:[vV]\d)?\s*(?:$|[\s\.\[\(])", RegexOptions.Compiled),
+        };
+
+        // A bracket block holding one of these is a resolution / colour depth / year, not an episode.
+        private static readonly int[] NotEpisodeNumbers = { 480, 576, 720, 1080, 1440, 2160, 4320 };
+
+        // OP / ED / preview / bonus material. Numbering these would push them into the main run.
+        private static readonly Regex SpecialMarker = new Regex(
+            @"(?:^|[^A-Za-z])(?:NC(?:OP|ED)|OP|ED|SP|PV|CM|MENU|TRAILER|PREVIEW|CREDITLESS)\d{0,2}(?:$|[^A-Za-z])|" +
+            @"特典|映像特典|番外編|番外篇|預告|预告|予告|图集|圖集|画集|畫集|舞蹈|变身|變身|技能集|花絮|幕后|幕後|SPECIAL|ノンクレジット|メニュー",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         private static readonly Dictionary<char, int> CjkDigits = new Dictionary<char, int>
         {
             { '零', 0 }, { '一', 1 }, { '二', 2 }, { '三', 3 }, { '四', 4 },
@@ -200,6 +230,79 @@ namespace Emby.Plugins.Bangumi.Utils
             }
 
             return text;
+        }
+
+        /// <summary>
+        /// Last-resort episode number for a file Emby's own resolver could not number.
+        ///
+        /// Emby decides <c>IndexNumber</c> long before any provider runs, and when it fails the
+        /// episode has no number at all - not a wrong one - so every number based lookup is dead and
+        /// the file also drops out of its season in the UI. Bracket-only release names are the usual
+        /// cause: "[GM-Team][国漫][诛仙 第4季][Jade Dynasty Ⅳ][2026][01][HEVC][GB][4K]" carries the
+        /// number in a bracket block, which Emby does not read as an episode number.
+        ///
+        /// Deliberately conservative: OP / ED / bonus material returns null rather than a guess,
+        /// half episodes ("- 03.5") return null because <c>IndexNumber</c> is an int and rounding
+        /// would collide with a real episode, and a bracket block that looks like a year or a
+        /// resolution is skipped.
+        /// </summary>
+        public static int? ParseEpisodeNumber(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName)) return null;
+
+            var text = ToHalfWidth(KnownExtension.Replace(fileName.Trim(), string.Empty));
+            if (text.Length == 0) return null;
+            if (SpecialMarker.IsMatch(text)) return null;
+
+            // A fractional episode cannot be represented, and guessing would overwrite a real one.
+            if (Regex.IsMatch(text, @"(?:^|[\s\.\-_\[\(])\d{1,4}\.5(?:$|[\s\.\-_\]\)vV])")) return null;
+
+            foreach (var pattern in EpisodeNumberPatterns)
+            {
+                var match = pattern.Match(text);
+                if (!match.Success) continue;
+
+                var value = ParsePositiveInt(match.Groups["n"].Value);
+                if (value.HasValue) return value;
+            }
+
+            var trailing = TrailingBareNumber.Match(text);
+            if (trailing.Success)
+            {
+                var raw = trailing.Groups["n"].Value;
+                var value = ParsePositiveInt(raw);
+                if (IsPlausibleEpisodeNumber(raw, value)) return value;
+            }
+
+            // Bracket blocks last: they are the weakest signal, so anything that could be a year or
+            // a resolution is discarded instead of being treated as episode 1080.
+            foreach (Match match in BracketedNumber.Matches(text))
+            {
+                var raw = match.Groups["n"].Value;
+                var value = ParsePositiveInt(raw);
+                if (IsPlausibleEpisodeNumber(raw, value)) return value;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Guard for the two weak sources - a bare trailing number and a bracket block - where a
+        /// release year or a vertical resolution is just as likely as an episode number.
+        /// </summary>
+        private static bool IsPlausibleEpisodeNumber(string raw, int? value)
+        {
+            if (!value.HasValue) return false;
+            if (raw.Length == 4 && value.Value >= 1900 && value.Value <= 2099) return false;
+            return Array.IndexOf(NotEpisodeNumbers, value.Value) < 0;
+        }
+
+        private static int? ParsePositiveInt(string text)
+        {
+            int value;
+            if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value)) return null;
+            if (value < 0 || value > 9999) return null;
+            return value;
         }
 
         /// <summary>Cleaning only, no season handling. Exposed for tests and logging.</summary>

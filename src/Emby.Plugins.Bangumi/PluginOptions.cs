@@ -74,6 +74,10 @@ namespace Emby.Plugins.Bangumi
 
         // ---------- 集数匹配 ----------
 
+        [DisplayName("从文件名解析集号")]
+        [Description("Emby 自己解析不出集号时（常见于 \"[组名][番名][2026][01][HEVC]\" 这种纯方括号命名），从文件名里再解析一次并写回集号。OP / ED / 特典 / 半集（03.5）一律跳过，方括号里的年份和分辨率也会被排除。")]
+        public bool ParseEpisodeNumberFromFileName { get; set; } = true;
+
         [DisplayName("集号匹配方式")]
         [Description("Auto：先按季内集号 ep 匹配，匹配不到再按全系列连续集号 sort 匹配（推荐）。")]
         public EpisodeNumberMode EpisodeNumberMode { get; set; } = EpisodeNumberMode.Auto;
@@ -87,6 +91,10 @@ namespace Emby.Plugins.Bangumi
         [DisplayName("自动解析续集季度")]
         [Description("当 Emby 的 Season N（N>1）自身没有 Bangumi ID 时，沿条目的「续集」关系向后走 N-1 步来定位该季的条目。关闭后所有季共用主条目。")]
         public bool AutoResolveSequelSeasons { get; set; } = true;
+
+        [DisplayName("跨季连续集号回退")]
+        [Description("发布组按全系列连续集号命名时（仙逆 147 集、名侦探柯南 1100 集），当前季条目里根本没有这个集号。开启后回退到沿「前传 / 续集」关系走完整条链，用 Bangumi 的 sort（全系列连续号）精确匹配。仅在常规匹配全部失败、且集号大于本季集数时才触发。")]
+        public bool ResolveAbsoluteEpisodeNumbers { get; set; } = true;
 
         [DisplayName("写入分集时长")]
         [Description("用 Bangumi 记录的单集时长填充「运行时间」。媒体文件本身的时长通常更准，默认关闭。")]

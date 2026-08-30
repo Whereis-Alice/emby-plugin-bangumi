@@ -214,6 +214,66 @@ namespace Emby.Plugins.Bangumi.Providers
         }
 
         /// <summary>
+        /// Every anime subject of the franchise, oldest first. Unlike
+        /// <see cref="BuildEpisodeCandidatesAsync"/> this deliberately ignores season boundaries: it
+        /// exists so a franchise wide, absolute episode number can be looked up, and Bangumi's
+        /// <c>sort</c> field is franchise wide by definition (仙逆 年番3 numbers its episodes ep 1..52
+        /// but sort 129..180, which is exactly how GM-Team names the files).
+        /// </summary>
+        public static async Task<List<int>> BuildFranchiseChainAsync(
+            BangumiApiClient api, int anyId, CancellationToken cancellationToken)
+        {
+            var ids = new List<int>();
+            if (api == null || anyId <= 0) return ids;
+
+            var rootId = await FindFranchiseRootAsync(api, anyId, cancellationToken).ConfigureAwait(false);
+            var chain = await BuildChainAsync(api, rootId, cancellationToken).ConfigureAwait(false);
+            foreach (var entry in chain)
+            {
+                if (entry != null && entry.Id > 0 && !ids.Contains(entry.Id)) ids.Add(entry.Id);
+            }
+
+            // The walk starts from a 前传 hop and can therefore miss the subject it was asked about,
+            // whenever that subject is reachable only through a relation this resolver does not follow.
+            if (!ids.Contains(anyId)) ids.Add(anyId);
+            return ids;
+        }
+
+        /// <summary>
+        /// Oldest subject reachable from <paramref name="startId"/> through <c>前传</c> links. No season
+        /// agreement is required, because the caller wants the whole franchise rather than one season.
+        /// </summary>
+        private static async Task<int> FindFranchiseRootAsync(
+            BangumiApiClient api, int startId, CancellationToken cancellationToken)
+        {
+            var visited = new HashSet<int>();
+            visited.Add(startId);
+
+            var currentId = startId;
+            for (var depth = 0; depth < MaxChainDepth; depth++)
+            {
+                var related = await api.GetRelatedSubjectsAsync(currentId, cancellationToken).ConfigureAwait(false);
+                if (related == null) break;
+
+                // Lowest id first: the oldest registration is the earliest work in the franchise.
+                var previous = related
+                    .Where(r => r != null && r.Id > 0 &&
+                                r.Type == BangumiConstants.SubjectType.Anime &&
+                                string.Equals(r.Relation, PrequelRelation, StringComparison.Ordinal) &&
+                                !visited.Contains(r.Id))
+                    .OrderBy(r => r.Id)
+                    .FirstOrDefault();
+
+                if (previous == null) break;
+
+                visited.Add(previous.Id);
+                currentId = previous.Id;
+            }
+
+            return currentId;
+        }
+
+        /// <summary>
         /// Earlier cours of the same season as <paramref name="start"/>, oldest first. Only subjects
         /// that agree about the season number, or that carry an explicit split cour hint, are accepted:
         /// a genuine previous season restarts its episode numbering and would shift every offset lookup.

@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Emby.Plugins.Bangumi.Api;
+using Emby.Plugins.Bangumi.Utils;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Logging;
@@ -65,6 +67,29 @@ namespace Emby.Plugins.Bangumi.Providers
             result.Item.ParentIndexNumber = info.ParentIndexNumber;
             result.Item.IndexNumberEnd = info.IndexNumberEnd;
 
+            // ... unless the resolver produced no number at all. Some bracket-only release names
+            // ("[GM-Team][国漫][诛仙 第4季][2026][01][HEVC]") leave IndexNumber null, which kills every
+            // lookup below and also drops the file out of its season in the UI. A provider cannot
+            // influence the resolver, so this is the last place the number can be recovered, and it
+            // has to be written twice: onto the result so Emby persists it, and back onto info so the
+            // matching code further down can use it.
+            var numberedFromFileName = false;
+            if (!info.IndexNumber.HasValue && options.ParseEpisodeNumberFromFileName &&
+                !string.IsNullOrWhiteSpace(info.Path))
+            {
+                var fileName = Path.GetFileName(info.Path);
+                var parsedIndex = TitleNormalizer.ParseEpisodeNumber(fileName);
+                if (parsedIndex.HasValue)
+                {
+                    info.IndexNumber = parsedIndex;
+                    result.Item.IndexNumber = parsedIndex;
+                    numberedFromFileName = true;
+                    Logger.Info(
+                        "Bangumi: Emby left \"{0}\" unnumbered, recovered episode {1} from the file name",
+                        fileName, parsedIndex.Value);
+                }
+            }
+
             var isSpecial = info.ParentIndexNumber.HasValue && info.ParentIndexNumber.Value == 0;
 
             var candidates = await ResolveCandidatesAsync(info, options, isSpecial, cancellationToken)
@@ -73,6 +98,7 @@ namespace Emby.Plugins.Bangumi.Providers
             {
                 Verbose("Bangumi has no subject candidate for episode \"{0}\" (season {1})",
                     info.Name, info.ParentIndexNumber);
+                if (numberedFromFileName) KeepFileNameNumbering(result, info);
                 return result;
             }
 
@@ -96,14 +122,49 @@ namespace Emby.Plugins.Bangumi.Providers
                 preceding += episodes.Count;
             }
 
+            // Absolute (franchise wide) numbering. Long running donghua and shows like 名侦探柯南 are
+            // released with one continuous counter - 仙逆 files are numbered 147..155 - while Bangumi
+            // splits the show into one subject per year, each restarting ep at 1. The number therefore
+            // exists nowhere in the season's own subjects, but it is exactly Bangumi's sort field, which
+            // counts the whole franchise: 仙逆 年番3 is ep 1..52 / sort 129..180. Gated on the number
+            // exceeding everything the season accounted for, so a plainly missing episode does not pay
+            // for a chain walk.
+            if (episode == null && !isSpecial && options.ResolveAbsoluteEpisodeNumbers &&
+                info.IndexNumber.HasValue)
+            {
+                var absoluteTarget = info.IndexNumber.Value + options.EpisodeIndexOffset;
+                if (absoluteTarget > preceding)
+                {
+                    var absolute = await ResolveAbsoluteAsync(candidates[0], absoluteTarget, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (absolute != null)
+                    {
+                        episode = absolute.Episode;
+                        matchedSubjectId = absolute.SubjectId;
+                        matchedBy = "absolute sort";
+                    }
+                }
+            }
+
             if (episode == null)
             {
                 Verbose("Bangumi: no episode matched index {0} (season {1}) in subject(s) {2}, {3} episode(s) inspected",
                     info.IndexNumber, info.ParentIndexNumber, Join(candidates), preceding);
+                if (numberedFromFileName) KeepFileNameNumbering(result, info);
                 return result;
             }
 
             var title = PickTitle(episode.Name, episode.NameCn, options);
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                // Donghua and many web releases carry no per-episode titles on Bangumi at all. Leaving
+                // Name unset is worse than it looks: Emby keeps the name it generated back when the
+                // file was resolved, and for a file it could not number that is the identical
+                // "第01集" on every episode in the folder. Naming from the number that was actually
+                // matched is both correct and unique.
+                title = FormatNumberedTitle(episode, info, options);
+            }
+
             if (!string.IsNullOrWhiteSpace(title)) result.Item.Name = title;
             if (options.WriteOriginalTitle && !string.IsNullOrWhiteSpace(episode.Name))
             {
@@ -152,6 +213,52 @@ namespace Emby.Plugins.Bangumi.Providers
             Verbose("Bangumi subject {0}: episode index {1} matched ep id {2} via {3}",
                 matchedSubjectId, info.IndexNumber, episode.Id, matchedBy);
             return result;
+        }
+
+        /// <summary>
+        /// Placeholder title for an episode Bangumi never titled. Prefers the number Emby is showing
+        /// over Bangumi's <c>ep</c> so the label cannot contradict the episode's own index.
+        /// </summary>
+        private static string FormatNumberedTitle(BangumiEpisode episode, EpisodeInfo info, PluginOptions options)
+        {
+            int number;
+            if (info.IndexNumber.HasValue && info.IndexNumber.Value > 0)
+            {
+                number = info.IndexNumber.Value;
+            }
+            else if (episode.Ep.HasValue && episode.Ep.Value > 0)
+            {
+                number = (int)episode.Ep.Value;
+            }
+            else if (episode.Sort > 0)
+            {
+                number = (int)episode.Sort;
+            }
+            else
+            {
+                return null;
+            }
+
+            var padded = number.ToString("00", CultureInfo.InvariantCulture);
+            return options.PreferChineseTitle
+                ? "第" + padded + "集"
+                : "第" + padded + "話";
+        }
+
+        /// <summary>
+        /// A number recovered from the file name is worth keeping even when Bangumi had nothing to
+        /// say about the episode, but Emby discards a result whose HasMetadata is false - including
+        /// the IndexNumber on it. Name is copied across at the same time so a "replace all metadata"
+        /// refresh cannot blank the title on the way through.
+        /// </summary>
+        private static void KeepFileNameNumbering(MetadataResult<Episode> result, EpisodeInfo info)
+        {
+            if (string.IsNullOrWhiteSpace(result.Item.Name) && !string.IsNullOrWhiteSpace(info.Name))
+            {
+                result.Item.Name = info.Name;
+            }
+
+            result.HasMetadata = true;
         }
 
         /// <summary>
@@ -228,6 +335,48 @@ namespace Emby.Plugins.Bangumi.Providers
                 .GetEpisodesAsync(subjectId, BangumiConstants.EpisodeType.Main, cancellationToken)
                 .ConfigureAwait(false);
             return main ?? new List<BangumiEpisode>();
+        }
+
+        /// <summary>A hit from the franchise wide sort lookup, together with the subject that owned it.</summary>
+        private sealed class AbsoluteMatch
+        {
+            public BangumiEpisode Episode { get; set; }
+
+            public int SubjectId { get; set; }
+        }
+
+        /// <summary>
+        /// Looks for an episode whose <c>sort</c> equals <paramref name="target"/> anywhere in the
+        /// franchise. Only an exact sort match counts: sort is a single franchise wide counter, so an
+        /// exact hit is the definition of "the Nth episode of this show" and needs no offset guessing.
+        /// Unaired episodes are rejected, because a file that exists cannot hold one.
+        /// </summary>
+        private async Task<AbsoluteMatch> ResolveAbsoluteAsync(
+            int seedSubjectId, int target, CancellationToken cancellationToken)
+        {
+            if (seedSubjectId <= 0 || target <= 0) return null;
+
+            var franchise = await BangumiSeasonResolver
+                .BuildFranchiseChainAsync(Api, seedSubjectId, cancellationToken)
+                .ConfigureAwait(false);
+
+            // A franchise of one subject was already searched by the caller.
+            if (franchise.Count <= 1) return null;
+
+            foreach (var subjectId in franchise)
+            {
+                var episodes = await LoadEpisodesAsync(subjectId, false, cancellationToken).ConfigureAwait(false);
+                if (episodes.Count == 0) continue;
+
+                var hit = episodes.FirstOrDefault(e => e != null && NearlyEqual(e.Sort, target) && HasAired(e));
+                if (hit == null) continue;
+
+                Verbose("Bangumi: index {0} looks like franchise numbering, sort {0} is ep {1} of subject {2}",
+                    target, hit.Ep, subjectId);
+                return new AbsoluteMatch { Episode = hit, SubjectId = subjectId };
+            }
+
+            return null;
         }
 
         /// <summary>
