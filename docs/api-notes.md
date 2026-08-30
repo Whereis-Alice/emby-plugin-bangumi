@@ -34,6 +34,12 @@ Invoke-RestMethod -Uri 'https://api.bgm.tv/v0/subjects/552533' `
 | GET | `/v0/subjects/{id}/characters` | 角色与声优。552533 实测 **38 条，全部带 `actors[]`** |
 | GET | `/v0/subjects/{id}/subjects` | 关联条目，`relation` 实测值包括 `续集`/`前传`/`书籍`/`片头曲`/`片尾曲`/`原声集` |
 | GET | `/search/subject/{keyword}?type=2&responseGroup=large&max_results=N` | 旧版搜索，作为 `/v0/search` 失败时的兜底 |
+| GET | `/v0/persons/{id}` | 人物详情。中文名、性别、生日、出生地、身高、别名全在 `infobox` 里，不是顶层字段 |
+| GET | `/v0/characters/{id}` | 角色详情。同上，`infobox` 里的「简体中文名」是唯一的中文名来源 |
+| POST | `/v0/search/persons` | body `{"keyword":"..."}`，用于 Emby「识别」界面按名字找人物 |
+| GET | `/v0/persons/{id}/subjects` | 该人物参与的条目（插件未用，留作反查） |
+| GET | `/v0/persons/{id}/characters` | 该人物配过的角色（插件未用） |
+| GET | `/v0/characters/{id}/persons` | 该角色的所有声优（插件未用） |
 
 `/v0/subjects/{id}` 返回的字段：
 `date, platform, images, summary, name, name_cn, tags, infobox, rating,
@@ -181,11 +187,43 @@ Bangumi 按「放送批次」建条目，分割播出（split cour）的一季�
 这种断头字符串。处理方式：优先只读动画制作类键；全空时才退回 `制作`/`製作`，
 并把 `（）()；;` 也当分隔符，单项长度 > 60 丢弃，总数上限 8。
 
-### 5.3 `/v0/subjects/{id}/persons` 没有中文名
+### 5.3 条目的 persons / characters 都没有中文名
 
-返回的 `name` 是原文（`関根明良`、`山田尚子`）。中文名要对每个人再打一次
-`/v0/persons/{id}`；552533 一个条目就有 **330** 条人员记录，为了译名把请求数放大
-两个数量级不划算，所以插件直接写原文名。
+`/v0/subjects/{id}/persons` 和 `/v0/subjects/{id}/characters` 返回的 `name` 都是原文
+（`関根明良`、`ナツキ・スバル`）。中文译名只存在于各自详情的 `infobox`「简体中文名」里，
+必须对每个 id 再打一次 `/v0/persons/{id}` / `/v0/characters/{id}`。
+
+552533 一个条目就有 **330** 条人员记录，无条件展开会把请求数放大两个数量级。插件的做法是
+**带预算地做**：「中文译名查询上限」（默认 40）限制每个条目最多补多少条详情，且
+
+- 角色名默认开（`TranslateCharacterNames = true`）——「菜月昴」「艾米莉娅」值得，
+  而且角色数（几十）远小于人员数（几百）；
+- 人名默认关（`TranslatePersonNames = false`）——日文人名本来就是汉字，`小林裕介`
+  和「小林裕介」没有区别；
+- 详情响应进同一个 TTL 缓存，所以一部番的多个季度共享结果，超预算的部分保留原文。
+
+### 5.4 公司被记成「人物」
+
+`製作`、`动画制作`、`出品方`、`製作協力` 这些 relation 下面挂的是 KADOKAWA、WHITE FOX、
+フジテレビ 这类法人，但它们在 `/v0/subjects/{id}/persons` 里的 `type` **仍然是 1（个人）**。
+按 `type` 过滤没用，只能按 relation 名字挡：插件维护一个公司关系集合，命中的一律不导入为
+人物，公司信息只经 infobox 进 `Studios`。不挡的话演员表里会出现「作曲：KADOKAWA」。
+
+### 5.5 Emby 只有 8 种 `PersonType`
+
+反射确认 Emby 4.9 的 `PersonType` 只有 `Actor / Director / Writer / Producer /
+GuestStar / Composer / Conductor / Lyricist` 八个值，而 Bangumi 的 relation 有上百种
+（总作画监督、色彩设计、道具设计、制作进行…）。并且 `PersonInfo` **没有 `SortOrder`**，
+列表顺序就是插入顺序。所以插件的策略是：
+
+- 能精确映射的映射掉（监督/演出/分镜 → Director，系列构成/脚本/原作 → Writer，
+  音乐/主题歌作曲/编曲 → Composer，作词 → Lyricist，各类制片/企画 → Producer）；
+- 映射不掉的按「未识别职位的处理」落到 Producer，**职位原文写进 `Role`**，信息不丢；
+- 未映射职位内部再排一次序（副导演/总作画监督/人物设定 → 各类监督 → 作画监督/设定 →
+  … → `原画` → 制作进行/协力），保证被上限截断的一定是末流职位；
+- 同一个人身兼多职时**只出现一条**，`PersonType` 取优先级最高的那个职位，其余职位并入
+  `Role`（`篠原正寛 :: 分镜 / OP・ED 演出 / OP・ED 分镜 / 导演`）。同一个人既是声优又是
+  制作人员时，以声优那条为准，职位并入角色名。
 
 ## 6. 限速与错误处理
 

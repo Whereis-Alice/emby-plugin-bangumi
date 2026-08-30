@@ -37,7 +37,15 @@ TMDB 和 TheTVDB 把一部番的所有季塞进同一个条目的 `Season 1..N`�
   `ParentIndexNumber`，不会像常见实现那样把整季打散成一堆「第 1 季」。
 - **目录名兜底搜索**：条目已经被 TMDB 刮成错误的季度时，磁盘上的目录名往往还保留着
   真实季度（`2026年7月 Clevatess II-…`）。搜索会同时用 Emby 条目名和目录末段。
-- **人员导入**：导演/脚本/音乐/原作等制作人员，以及声优（含所配角色名）。
+- **人员导入尽可能全面**：制作人员（监督 / 系列构成 / 脚本 / 音乐 / 作词 / 各类监督 /
+  制片）与声优一起导入，角色名与职位名默认中文化。Emby 只有 8 种 `PersonType`，
+  装不下的职位（总作画监督、摄影监督、色彩设计…）按可读性排序落到「制作人」，
+  职位原文保留在角色名里。同一个人身兼多职合并成一条（`篠原正寛 :: 分镜 / OP・ED 演出 / 导演`），
+  一人分饰多角也合并（`河西健吾 :: 莱伊·巴登凯托斯 / 罗伊·爱尔法德`）。
+  Bangumi 把 KADOKAWA 这类**公司也记成「人物」**，插件按职位关系把它们挡在人员列表外，
+  只留在 `Studios`。
+- **人物页面元数据**：演员 / 制作人员的人物页会填上简介（性别 / 生日 / 出生地 / 身高 /
+  所属 / 职业 / 别名）、出生日期、出生地与头像，而不是一个空壳页。
 - **三个 External ID**：条目、分集、人物，可在 Emby「识别」界面手填 Bangumi ID 强制覆盖。
 - **中文优先**：`name_cn` 作标题、原文名写入「原始标题」，可反转。
 - 内置**自我限速 + 指数退避 + TTL 缓存**，一次全库扫描不会打爆 Bangumi 配额。
@@ -76,6 +84,9 @@ TMDB 和 TheTVDB 把一部番的所有季塞进同一个条目的 `Season 1..N`�
 ```
 
 `install-local.ps1` 会在覆盖前把已安装的 DLL 备份成 `.bak-<时间戳>`。
+`-StopEmby` 优先走 `POST /emby/System/Shutdown`（`-ApiKey`，或环境变量 `EMBY_API_KEY`；
+`-ServerUrl` 默认 `http://127.0.0.1:8096`），只在没有 token 时才回退到窗口/进程信号——
+脚本自己用 `-WindowStyle Hidden` 起的服务端没有主窗口，`CloseMainWindow()` 从第二次起必然失效。
 Emby 运行时会锁住插件文件，所以不带 `-StopEmby` 时脚本只会警告并退出，不会破坏现场。
 
 Linux / macOS 直接用 dotnet CLI：
@@ -101,8 +112,18 @@ dotnet build src/Emby.Plugins.Bangumi/Emby.Plugins.Bangumi.csproj -c Release \
 | 标签同时写入类型 | 关 | 把用户标签也塞进 Genres；开启会让类型列表变很杂 |
 | meta_tags 写入类型 | 开 | 用 Bangumi 官方 `meta_tags` 当 Genres，见「字段映射」 |
 | Genres 黑名单 | 见下 | 逗号分隔。过滤掉 `meta_tags` 里的平台 / 国家 / 原作类型 |
-| 导入制作人员 / 声优 | 开 / 开 | |
-| 人员数量上限 | 40 | 一个条目可能有 300+ 人员记录 |
+| 导入制作人员 | 开 | 监督 / 系列构成 / 脚本 / 音乐 / 原作 / 人物设定 / 各类监督 / 制片人 |
+| 导入声优 | 开 | 导入为「演员」，角色名填其配音角色 |
+| 未识别职位的处理 | Producer | Emby 只有 8 种 `PersonType`。Producer = 装不下的职位导入为「制作人」、职位原文进角色名；另可选 GuestStar / Skip |
+| 职位黑名单 | 空 | 逗号分隔的 Bangumi 职位名。热门番「原画」动辄上百人，填 `原画,第二原画,动画` 可让列表干净 |
+| 声优数量上限 | 60 | 按 主角 → 配角 → 客串 排序后截断 |
+| 制作人员数量上限 | 60 | 按 监督 → 编剧 → 音乐 → 制片 → 其他 排序后截断 |
+| 人员数量总上限 | 200 | 声优 + 制作人员写入 Emby 的总条数兜底 |
+| 合并同一声优的多个角色 | 开 | 一人分饰多角合并成「角色A / 角色B」一条 |
+| 角色名使用中文译名 | 开 | 条目角色接口只给日文名，逐个请求 `/v0/characters/{id}` 取「简体中文名」 |
+| 声优 / 制作人员名使用中文译名 | 关 | 同理请求 `/v0/persons/{id}`。日文人名多为汉字原文，默认关 |
+| 中文译名查询上限 | 40 | 每个条目最多请求多少条详情用于取中文名，0 = 关闭译名查询 |
+| 人物页面元数据 | 开 | 为人物页填简介 / 生日 / 出生地 / 头像（`/v0/persons/{id}`） |
 | 代理地址 | 空 | 例 `http://127.0.0.1:7890`、`socks5://127.0.0.1:1080` |
 | User-Agent | 内置 | **不要改成通用 UA，Bangumi 会拒绝** |
 | API 地址 | `https://api.bgm.tv` | 可指向自建反代 |
@@ -168,7 +189,8 @@ dotnet build src/Emby.Plugins.Bangumi/Emby.Plugins.Bangumi.csproj -c Release \
 | `Genres` | `meta_tags` 减去黑名单 |
 | `Tags` | `meta_tags` + 用户 `tags`（按热度，受上限约束） |
 | `Studios` | infobox `动画制作` / `アニメーション制作`；为空时才退回 `制作` / `製作` |
-| `People` | `/persons`（制作人员）+ `/characters`（声优 + 角色名） |
+| `People` | `/persons`（制作人员，公司关系除外）+ `/characters`（声优 + 角色名） |
+| 人物页 `Overview` / `PremiereDate` / `ProductionLocations` / 头像 | `/v0/persons/{id}` 的 `summary` 与 infobox |
 | `ProviderIds` | `Bangumi` / `BangumiEpisode` / `BangumiPerson` |
 
 两处刻意的取舍：
@@ -289,8 +311,13 @@ Emby 的 `MergeBaseItemData` 在 `ReplaceAllMetadata=true` 时会**无条件**�
 - **`/v0/subjects/{id}/characters` 不返回 `name_cn`**，角色名只有原文。
 - **`/v0/users/-/collections/{sid}` 用 `-` 代指当前用户会 404**，必须显式传用户名。
 - **`meta_tags` 不是 Genre 集合**，见上文「字段映射」。
-- **`/v0/subjects/{id}/persons` 只给原文名**（`関根明良` 而不是「关根明良」），
-  拿中文名要对每个人再打一次 `/v0/persons/{id}`，一个条目 300+ 人的量级不值得。
+- **`/v0/subjects/{id}/persons` 与 `/characters` 都只给原文名**（`関根明良` 而不是
+  「关根明良」），中文译名只存在于各自详情的 infobox「简体中文名」里。插件按
+  「中文译名查询上限」的预算逐个补 `/v0/characters/{id}` / `/v0/persons/{id}`，
+  超预算的保留原文，不会为了 300+ 人的条目把请求数打爆。
+- **公司会被记成「人物」**：`製作`、`动画制作`、`出品方` 这些关系下挂的是 KADOKAWA、
+  WHITE FOX 这类法人，Bangumi 的 `type` 仍是 1（个人）。按 `type` 过滤不管用，只能按
+  职位关系名挡掉，否则演员表里会混进一堆公司。
 
 ## 已知限制
 
@@ -331,6 +358,7 @@ src/Emby.Plugins.Bangumi/
 ├── Api/
 │   ├── BangumiApiClient.cs    HttpClient 封装：限速、重试、缓存、404→null
 │   ├── BangumiModels.cs       DTO（注意 infobox 的多态处理）
+│   ├── BangumiPeopleModels.cs  人物 / 角色详情 DTO 与 infobox 取值
 │   └── TtlCache.cs            带惰性过期扫描的内存缓存
 ├── Utils/
 │   └── TitleNormalizer.cs     文件名清洗与季度标记提取
@@ -342,6 +370,7 @@ src/Emby.Plugins.Bangumi/
     ├── BangumiEpisodeProvider.cs   候选条目解析与双编号匹配
     ├── BangumiMovieProvider.cs
     ├── BangumiImageProvider.cs
+    ├── BangumiPersonProvider.cs     人物页元数据 + 头像
     └── BangumiExternalId.cs
 ```
 

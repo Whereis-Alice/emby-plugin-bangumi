@@ -559,6 +559,58 @@ namespace Emby.Plugins.Bangumi.Api
         }
 
         /// <summary>
+        /// GET /v0/persons/{id}. Bangumi only returns a person's biography, portrait and birth
+        /// date here; the subject-level /persons list carries nothing but name + relation.
+        /// </summary>
+        public async Task<BangumiPersonDetail> GetPersonAsync(int personId, CancellationToken cancellationToken)
+        {
+            if (personId <= 0) return null;
+
+            var payload = await SendAsync(
+                HttpMethod.Get,
+                "/v0/persons/" + personId.ToString(CultureInfo.InvariantCulture),
+                null, true, cancellationToken).ConfigureAwait(false);
+
+            return Deserialize<BangumiPersonDetail>(payload, "person " + personId);
+        }
+
+        /// <summary>
+        /// GET /v0/characters/{id}. The only place a Chinese rendering of a character name exists
+        /// (infobox 简体中文名) - /v0/subjects/{id}/characters returns the Japanese name alone.
+        /// </summary>
+        public async Task<BangumiCharacterDetail> GetCharacterAsync(int characterId, CancellationToken cancellationToken)
+        {
+            if (characterId <= 0) return null;
+
+            var payload = await SendAsync(
+                HttpMethod.Get,
+                "/v0/characters/" + characterId.ToString(CultureInfo.InvariantCulture),
+                null, true, cancellationToken).ConfigureAwait(false);
+
+            return Deserialize<BangumiCharacterDetail>(payload, "character " + characterId);
+        }
+
+        /// <summary>POST /v0/search/persons, used when Emby asks for a person it has no Bangumi id for.</summary>
+        public async Task<List<BangumiPersonDetail>> SearchPersonsAsync(
+            string keyword, int limit, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(keyword)) return new List<BangumiPersonDetail>();
+
+            limit = Math.Max(1, Math.Min(20, limit));
+            var request = new BangumiPersonSearchRequest { Keyword = keyword };
+
+            var payload = await SendAsync(
+                HttpMethod.Post,
+                "/v0/search/persons?limit=" + limit.ToString(CultureInfo.InvariantCulture) + "&offset=0",
+                JsonSerializer.Serialize(request, WriteOptions),
+                cacheable: true,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            var paged = Deserialize<BangumiPaged<BangumiPersonDetail>>(payload, "person search '" + keyword + "'");
+            return paged != null && paged.Data != null ? paged.Data : new List<BangumiPersonDetail>();
+        }
+
+        /// <summary>
         /// Fetches an arbitrary URL (artwork on lain.bgm.tv) through the same proxy and
         /// user agent, bypassing the API rate limiter.
         /// </summary>

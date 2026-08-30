@@ -24,6 +24,25 @@ namespace Emby.Plugins.Bangumi
         SortNumber = 2
     }
 
+    /// <summary>
+    /// What to do with a staff credit whose Bangumi relation has no Emby
+    /// <see cref="MediaBrowser.Model.Entities.PersonType"/> counterpart (作画监督, 人物设定,
+    /// 美术监督, 色彩设计, 摄影监督, 音响监督 ...). Emby only ships eight person types, so the
+    /// long tail of animation credits has to be either dropped or filed under a generic type
+    /// with the exact Bangumi job kept in the person's role text.
+    /// </summary>
+    public enum UnmappedStaffMode
+    {
+        /// <summary>Import nothing that is not one of the well known jobs.</summary>
+        Skip = 0,
+
+        /// <summary>Import as Producer, role = the Bangumi job title (default).</summary>
+        Producer = 1,
+
+        /// <summary>Import as GuestStar, which the Emby web client renders inside the cast list.</summary>
+        GuestStar = 2
+    }
+
     public class PluginOptions : EditableOptionsBase
     {
         public override string EditorTitle => "Bangumi 番组计划";
@@ -98,17 +117,60 @@ namespace Emby.Plugins.Bangumi
         public bool ImportTagsAsGenres { get; set; } = false;
 
         [DisplayName("导入制作人员")]
-        [Description("导入导演、脚本、音乐、原作等制作人员。")]
+        [Description("导入 /v0/subjects/{id}/persons 的全部制作人员：监督、系列构成、脚本、音乐、原作、人物设定、作画监督、美术监督、摄影监督、音响监督、制片人等。")]
         public bool ImportStaff { get; set; } = true;
 
         [DisplayName("导入声优")]
-        [Description("把声优导入为「演员」，角色名填写其配音的角色。")]
+        [Description("把声优导入为「演员」，角色名填写其配音的角色（取自 /v0/subjects/{id}/characters）。")]
         public bool ImportVoiceActors { get; set; } = true;
 
-        [DisplayName("人员数量上限")]
+        [DisplayName("未识别职位的处理")]
+        [Description("Emby 只有 8 种人员类型，装不下 Bangumi 的全部职位。Producer：把作画监督 / 人物设定 / 色彩设计 这类职位导入为「制作人」，职位原文写进角色名（推荐，信息不丢）。GuestStar：导入为客串，会显示在演员区。Skip：只导入能精确映射的职位。")]
+        public UnmappedStaffMode UnmappedStaff { get; set; } = UnmappedStaffMode.Producer;
+
+        [DisplayName("职位黑名单")]
+        [Description("逗号分隔的 Bangumi 职位名，命中的人员不导入。热门番的「原画」「第二原画」动辄上百人，想让人员列表干净可以填 原画,第二原画,动画,动画检查。默认不过滤。")]
+        public string StaffRelationBlocklist { get; set; } = string.Empty;
+
+        [DisplayName("声优数量上限")]
+        [Description("按 主角 → 配角 → 客串 排序后取前 N 位，保证被截断的一定是龙套。")]
         [MinValue(0)]
         [MaxValue(500)]
-        public int MaxPersons { get; set; } = 40;
+        public int MaxVoiceActors { get; set; } = 60;
+
+        [DisplayName("制作人员数量上限")]
+        [Description("按 监督 → 编剧 → 音乐 → 制片 → 其他 排序后取前 N 位。")]
+        [MinValue(0)]
+        [MaxValue(500)]
+        public int MaxStaff { get; set; } = 60;
+
+        [DisplayName("人员数量总上限")]
+        [Description("声优 + 制作人员写入 Emby 的总条数上限，兜底防止单个条目塞进几百号人。")]
+        [MinValue(0)]
+        [MaxValue(1000)]
+        public int MaxPersons { get; set; } = 200;
+
+        [DisplayName("合并同一声优的多个角色")]
+        [Description("一人分饰多角时合并成一条「角色A / 角色B」，而不是重复出现多次。")]
+        public bool MergeMultiRoleActors { get; set; } = true;
+
+        [DisplayName("角色名使用中文译名")]
+        [Description("Bangumi 的条目角色接口只给日文名，中文译名在角色详情的 infobox 里。开启后逐个请求 /v0/characters/{id} 取「简体中文名」，会明显增加一次刮削的请求数（有缓存）。")]
+        public bool TranslateCharacterNames { get; set; } = true;
+
+        [DisplayName("声优 / 制作人员名使用中文译名")]
+        [Description("同理请求 /v0/persons/{id} 取「简体中文名」。日文人名通常直接用汉字原文即可，默认关闭。")]
+        public bool TranslatePersonNames { get; set; } = false;
+
+        [DisplayName("中文译名查询上限")]
+        [Description("每个条目最多请求多少条角色 / 人物详情用于取中文名。0 表示关闭译名查询。")]
+        [MinValue(0)]
+        [MaxValue(200)]
+        public int MaxDetailLookups { get; set; } = 40;
+
+        [DisplayName("人物页面元数据")]
+        [Description("为演员 / 制作人员的人物页面填写简介、生日、出生地和头像（来自 /v0/persons/{id}）。关闭后人物页只有名字和从条目带过来的头像。")]
+        public bool ImportPersonMetadata { get; set; } = true;
 
         // ---------- 网络 ----------
 

@@ -21,6 +21,14 @@
 .PARAMETER StopEmby
     Stop EmbyServer before copying. Without it, a running server aborts the copy.
 
+.PARAMETER ApiKey
+    Emby API key used for a graceful POST /emby/System/Shutdown. This script starts the
+    server hidden, so from the second run onwards there is no window to close and the API
+    is the only clean way to stop it. Falls back to $env:EMBY_API_KEY.
+
+.PARAMETER ServerUrl
+    Base URL for the shutdown call. Defaults to http://127.0.0.1:8096.
+
 .PARAMETER StartEmby
     Start EmbyServer again after copying (implies -StopEmby).
 
@@ -34,7 +42,9 @@ param(
     [ValidateSet('Release', 'Debug')]
     [string]$Configuration = 'Release',
     [switch]$StopEmby,
-    [switch]$StartEmby
+    [switch]$StartEmby,
+    [string]$ApiKey,
+    [string]$ServerUrl = 'http://127.0.0.1:8096'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,13 +99,37 @@ if ($running.Count -gt 0) {
     }
 
     Write-Host "Stopping EmbyServer (PID $($running.Id -join ', '))..." -ForegroundColor Yellow
-    foreach ($process in $running) {
-        $process.CloseMainWindow() | Out-Null
+
+    if (-not $ApiKey) { $ApiKey = $env:EMBY_API_KEY }
+    if ($ApiKey) {
+        # -StartEmby launches the server with -WindowStyle Hidden, so CloseMainWindow is a
+        # no-op on every run after the first one. The API shutdown is the reliable path.
+        $shutdown = @{
+            Uri        = ('{0}/emby/System/Shutdown' -f $ServerUrl.TrimEnd('/'))
+            Method     = 'Post'
+            Headers    = @{ 'X-Emby-Token' = $ApiKey }
+            TimeoutSec = 20
+        }
+        if ($PSVersionTable.PSVersion.Major -ge 6) { $shutdown['NoProxy'] = $true }
+        try {
+            Invoke-RestMethod @shutdown | Out-Null
+            Write-Host 'Shutdown requested through the Emby API.' -ForegroundColor DarkGray
+        }
+        catch {
+            Write-Warning "API shutdown failed: $($_.Exception.Message)"
+        }
     }
-    Wait-Process -Name 'EmbyServer' -Timeout 30 -ErrorAction SilentlyContinue
+    else {
+        foreach ($process in $running) {
+            $process.CloseMainWindow() | Out-Null
+        }
+    }
+
+    Wait-Process -Name 'EmbyServer' -Timeout 45 -ErrorAction SilentlyContinue
     $still = @(Get-Process -Name 'EmbyServer' -ErrorAction SilentlyContinue)
     if ($still.Count -gt 0) {
-        Write-Warning 'EmbyServer did not exit within 30s. Close it manually and re-run; nothing was copied.'
+        Write-Warning 'EmbyServer did not exit within 45s. Close it manually and re-run; nothing was copied.'
+        Write-Warning 'A hidden server has no window to close: pass -ApiKey <key> or set $env:EMBY_API_KEY.'
         exit 2
     }
     Write-Host 'EmbyServer stopped.' -ForegroundColor Green

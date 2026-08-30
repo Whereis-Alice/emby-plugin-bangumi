@@ -50,34 +50,76 @@ namespace Emby.Plugins.Bangumi.Providers
 
 
         /// <summary>Infobox keys that carry alternative titles.</summary>
+        // Bangumi files a few company credits under person type 1, so KADOKAWA turns up in
+        // /v0/subjects/{id}/persons next to the actual staff. These belong in Studios, which
+        // CollectStudios already fills from the infobox, so they never become people.
+        private static readonly HashSet<string> CompanyRelations =
+            new HashSet<string>(StringComparer.Ordinal)
+            {
+                "製作",
+                "制作",
+                "动画制作",
+                "動画制作",
+                "音乐制作",
+                "音楽制作",
+                "出品方",
+                "联合制作",
+                "製作協力",
+                "制作协力",
+            };
+
         private static readonly string[] AliasKeys = { "别名", "別名", "英文名", "罗马字", "中文名" };
 
+        /// <summary>
+        /// Bangumi job title -> Emby person type, for the jobs that have an exact counterpart.
+        /// Everything else (作画监督, 人物设定, 色彩设计, 摄影监督, 音响监督, 原画 ...) is handled by
+        /// <see cref="PluginOptions.UnmappedStaff"/> so that no credit is silently lost.
+        /// </summary>
         private static readonly Dictionary<string, PersonType> StaffRoleMap =
             new Dictionary<string, PersonType>(StringComparer.Ordinal)
             {
                 { "导演", PersonType.Director },
                 { "总导演", PersonType.Director },
                 { "监督", PersonType.Director },
+                { "総監督", PersonType.Director },
+                { "总监督", PersonType.Director },
                 { "副导演", PersonType.Director },
                 { "系列导演", PersonType.Director },
+                { "助监督", PersonType.Director },
                 { "演出", PersonType.Director },
                 { "分镜", PersonType.Director },
+                { "絵コンテ", PersonType.Director },
+                { "CG导演", PersonType.Director },
+                { "CG 导演", PersonType.Director },
+                { "3DCG导演", PersonType.Director },
 
                 { "脚本", PersonType.Writer },
                 { "系列构成", PersonType.Writer },
+                { "シリーズ構成", PersonType.Writer },
                 { "原作", PersonType.Writer },
                 { "剧本", PersonType.Writer },
                 { "原案", PersonType.Writer },
+                { "构成", PersonType.Writer },
+                { "脚本协力", PersonType.Writer },
+                { "原作插画", PersonType.Writer },
 
                 { "音乐", PersonType.Composer },
+                { "音楽", PersonType.Composer },
                 { "主题歌作曲", PersonType.Composer },
                 { "插入歌作曲", PersonType.Composer },
                 { "歌曲编曲", PersonType.Composer },
                 { "主题歌编曲", PersonType.Composer },
+                { "插入歌编曲", PersonType.Composer },
                 { "音乐制作", PersonType.Composer },
+                { "音乐监督", PersonType.Composer },
+                { "劇伴", PersonType.Composer },
 
                 { "主题歌作词", PersonType.Lyricist },
                 { "插入歌作词", PersonType.Lyricist },
+                { "作词", PersonType.Lyricist },
+
+                { "指挥", PersonType.Conductor },
+                { "指揮", PersonType.Conductor },
 
                 { "制片人", PersonType.Producer },
                 { "动画制片人", PersonType.Producer },
@@ -88,6 +130,12 @@ namespace Emby.Plugins.Bangumi.Providers
                 { "製作", PersonType.Producer },
                 { "製作総指揮", PersonType.Producer },
                 { "执行制片人", PersonType.Producer },
+                { "制作总指挥", PersonType.Producer },
+                { "プロデューサー", PersonType.Producer },
+                { "音响制作", PersonType.Producer },
+                { "制作担当", PersonType.Producer },
+                { "制作管理", PersonType.Producer },
+                { "设定制作", PersonType.Producer },
             };
 
         private static readonly Dictionary<string, DayOfWeek> WeekdayMap =
@@ -791,96 +839,456 @@ namespace Emby.Plugins.Bangumi.Providers
 
         // ---------------------------------------------------------------- people
 
+        /// <summary>
+        /// Fills in cast and crew. Bangumi splits the two across separate endpoints:
+        /// <c>/characters</c> gives characters with their voice actors, <c>/persons</c> gives the
+        /// production staff with a free-text job title. Both are ordered by importance here so
+        /// that hitting a cap truncates 龙套 / 原画 rather than the 监督.
+        /// </summary>
         protected async Task ApplyPeopleAsync(
             BaseMetadataResult result, int subjectId, PluginOptions options, CancellationToken cancellationToken)
         {
             if (result == null || subjectId <= 0) return;
             if (!options.ImportStaff && !options.ImportVoiceActors) return;
 
-            var budget = Math.Max(0, options.MaxPersons);
-            if (budget == 0) return;
+            var totalBudget = Math.Max(0, options.MaxPersons);
+            if (totalBudget == 0) return;
 
-            var people = new List<PersonInfo>();
+            // Chinese names live in per-entity infobox entries, i.e. one extra request each.
+            // A single shared budget keeps a full library scan from exploding into thousands of calls.
+            var lookups = new LookupBudget(Math.Max(0, options.MaxDetailLookups));
 
-            if (options.ImportVoiceActors)
-            {
-                var characters = await Api.GetSubjectCharactersAsync(subjectId, cancellationToken).ConfigureAwait(false);
-                if (characters != null)
-                {
-                    // 主角 before 配角 before 客串 so that truncation keeps the important cast.
-                    foreach (var character in characters.OrderBy(c => RelationRank(c == null ? null : c.Relation)))
-                    {
-                        if (character == null || character.Actors == null) continue;
-                        foreach (var actor in character.Actors)
-                        {
-                            if (actor == null || string.IsNullOrWhiteSpace(actor.Name)) continue;
+            // Lets the crew pass recognise "this is already in the cast", so a seiyuu who also
+            // sang the theme song stays one row instead of turning up twice.
+            var castKeys = new HashSet<string>(StringComparer.Ordinal);
 
-                            var person = new PersonInfo
-                            {
-                                Name = actor.Name.Trim(),
-                                Type = PersonType.Actor,
-                                Role = string.IsNullOrWhiteSpace(character.Name) ? null : character.Name.Trim(),
-                                ImageUrl = actor.Images == null ? null : actor.Images.Thumbnail(),
-                            };
+            var cast = options.ImportVoiceActors
+                ? await BuildCastAsync(subjectId, options, castKeys, lookups, cancellationToken).ConfigureAwait(false)
+                : new List<PersonInfo>();
 
-                            if (actor.Id > 0)
-                            {
-                                person.ProviderIds[BangumiConstants.PersonProviderId] =
-                                    actor.Id.ToString(CultureInfo.InvariantCulture);
-                            }
+            var crew = options.ImportStaff
+                ? await BuildCrewAsync(subjectId, options, castKeys, lookups, cancellationToken).ConfigureAwait(false)
+                : new List<PersonInfo>();
 
-                            people.Add(person);
-                        }
-                    }
-                }
-            }
-
-            if (options.ImportStaff)
-            {
-                var staff = await Api.GetSubjectPersonsAsync(subjectId, cancellationToken).ConfigureAwait(false);
-                if (staff != null)
-                {
-                    foreach (var member in staff)
-                    {
-                        // type 2 / 3 are companies and bands; those belong in Studios, not the cast list.
-                        if (member == null || member.Type != 1) continue;
-                        if (string.IsNullOrWhiteSpace(member.Name) || string.IsNullOrWhiteSpace(member.Relation)) continue;
-
-                        PersonType type;
-                        if (!StaffRoleMap.TryGetValue(member.Relation.Trim(), out type)) continue;
-
-                        var person = new PersonInfo
-                        {
-                            Name = member.Name.Trim(),
-                            Type = type,
-                            Role = member.Relation.Trim(),
-                            ImageUrl = member.Images == null ? null : member.Images.Thumbnail(),
-                        };
-
-                        if (member.Id > 0)
-                        {
-                            person.ProviderIds[BangumiConstants.PersonProviderId] =
-                                member.Id.ToString(CultureInfo.InvariantCulture);
-                        }
-
-                        people.Add(person);
-                    }
-                }
-            }
+            result.ResetPeople();
 
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var added = 0;
-            result.ResetPeople();
+            var castAdded = Emit(result, cast, Math.Max(0, options.MaxVoiceActors), totalBudget, seen, ref added);
+            var crewAdded = Emit(result, crew, Math.Max(0, options.MaxStaff), totalBudget, seen, ref added);
+
+            Verbose(
+                "Bangumi subject {0}: attached {1} voice actors (of {2}) and {3} staff (of {4}), {5} name lookups spent",
+                subjectId, castAdded, cast.Count, crewAdded, crew.Count, lookups.Spent);
+        }
+
+        private static int Emit(
+            BaseMetadataResult result,
+            List<PersonInfo> people,
+            int cap,
+            int totalBudget,
+            HashSet<string> seen,
+            ref int added)
+        {
+            var emitted = 0;
             foreach (var person in people)
             {
-                if (added >= budget) break;
-                var key = person.Type + "|" + person.Name + "|" + (person.Role ?? string.Empty);
+                if (emitted >= cap || added >= totalBudget) break;
+
+                var key = ((int)person.Type).ToString(CultureInfo.InvariantCulture) + "|" + person.Name;
                 if (!seen.Add(key)) continue;
+
                 result.AddPerson(person);
+                emitted++;
                 added++;
             }
 
-            Verbose("Bangumi subject {0}: attached {1} of {2} people", subjectId, added, people.Count);
+            return emitted;
+        }
+
+        private async Task<List<PersonInfo>> BuildCastAsync(
+            int subjectId,
+            PluginOptions options,
+            HashSet<string> castKeys,
+            LookupBudget lookups,
+            CancellationToken cancellationToken)
+        {
+            var cast = new List<PersonInfo>();
+            var characters = await Api.GetSubjectCharactersAsync(subjectId, cancellationToken).ConfigureAwait(false);
+            if (characters == null) return cast;
+
+            // OrderBy is a stable sort, so 主角 before 配角 before 客串 while keeping Bangumi's
+            // own order (which is roughly billing order) inside each group.
+            var ordered = characters
+                .Where(c => c != null && c.Actors != null && c.Actors.Count > 0)
+                .OrderBy(c => RelationRank(c.Relation))
+                .ToList();
+
+            var index = new Dictionary<string, PersonInfo>(StringComparer.Ordinal);
+
+            foreach (var character in ordered)
+            {
+                var role = await ResolveCharacterNameAsync(character, options, lookups, cancellationToken)
+                    .ConfigureAwait(false);
+
+                foreach (var actor in character.Actors)
+                {
+                    if (actor == null || string.IsNullOrWhiteSpace(actor.Name)) continue;
+
+                    var name = await ResolvePersonNameAsync(actor.Id, actor.Name, options, lookups, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+
+                    var key = actor.Id > 0
+                        ? "id:" + actor.Id.ToString(CultureInfo.InvariantCulture)
+                        : "name:" + name;
+
+                    PersonInfo existing;
+                    if (options.MergeMultiRoleActors && index.TryGetValue(key, out existing))
+                    {
+                        // 一人分饰多角: keep one entry whose role reads "角色A / 角色B".
+                        existing.Role = MergeRole(existing.Role, role);
+                        continue;
+                    }
+
+                    var person = new PersonInfo
+                    {
+                        Name = name,
+                        Type = PersonType.Actor,
+                        Role = role,
+                        ImageUrl = actor.Images == null ? null : actor.Images.Thumbnail(),
+                    };
+
+                    if (actor.Id > 0)
+                    {
+                        person.ProviderIds[BangumiConstants.PersonProviderId] =
+                            actor.Id.ToString(CultureInfo.InvariantCulture);
+                    }
+
+                    if (!index.ContainsKey(key)) index[key] = person;
+                    castKeys.Add(key);
+                    cast.Add(person);
+                }
+            }
+
+            return cast;
+        }
+
+        private async Task<List<PersonInfo>> BuildCrewAsync(
+            int subjectId,
+            PluginOptions options,
+            HashSet<string> castKeys,
+            LookupBudget lookups,
+            CancellationToken cancellationToken)
+        {
+            var crew = new List<PersonInfo>();
+            var staff = await Api.GetSubjectPersonsAsync(subjectId, cancellationToken).ConfigureAwait(false);
+            if (staff == null) return crew;
+
+            var blocked = ParseCsvSet(options.StaffRelationBlocklist);
+            var ranked = new List<CrewEntry>();
+            var index = new Dictionary<string, CrewEntry>(StringComparer.Ordinal);
+            var sequence = 0;
+
+            foreach (var member in staff)
+            {
+                // type 2 / 3 are companies and bands; those belong in Studios, not the cast list.
+                if (member == null || member.Type != 1) continue;
+                if (string.IsNullOrWhiteSpace(member.Name) || string.IsNullOrWhiteSpace(member.Relation)) continue;
+
+                var relation = member.Relation.Trim();
+                if (blocked.Contains(relation) || CompanyRelations.Contains(relation)) continue;
+
+                PersonType type;
+                int priority;
+                var mapped = StaffRoleMap.TryGetValue(relation, out type);
+                if (mapped)
+                {
+                    priority = PriorityOf(type);
+                }
+                else
+                {
+                    switch (options.UnmappedStaff)
+                    {
+                        case UnmappedStaffMode.Producer:
+                            type = PersonType.Producer;
+                            break;
+                        case UnmappedStaffMode.GuestStar:
+                            type = PersonType.GuestStar;
+                            break;
+                        default:
+                            continue;
+                    }
+
+                    // Behind every exactly mapped job, and within that tail the creative leads
+                    // (総作画監督, 音響監督, ...) rank above the long 原画 / 协力 list, so a cap trims
+                    // the least interesting credits first instead of Bangumi's arbitrary order.
+                    priority = UnmappedPriority + UnmappedRankOf(relation);
+                }
+
+                var name = await ResolvePersonNameAsync(member.Id, member.Name, options, lookups, cancellationToken)
+                    .ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                var key = member.Id > 0
+                    ? "id:" + member.Id.ToString(CultureInfo.InvariantCulture)
+                    : "name:" + name;
+
+                // Only a genuinely different credit (監督, 脚本, 音楽, ...) earns a second row next to
+                // the person's Actor entry; a stray 主题歌演出 would just be noise.
+                if (!mapped && castKeys.Contains(key)) continue;
+
+                CrewEntry existing;
+                if (index.TryGetValue(key, out existing))
+                {
+                    // One person, several jobs (監督 + 絵コンテ, 作画监督 + 人物设定). Emby has a single
+                    // type per person per item, so the highest ranking job wins it and the remaining
+                    // jobs are folded into the role text.
+                    if (priority < existing.Priority)
+                    {
+                        existing.Priority = priority;
+                        existing.Person.Type = type;
+                        existing.Person.Role = MergeRole(relation, existing.Person.Role);
+                    }
+                    else
+                    {
+                        existing.Person.Role = MergeRole(existing.Person.Role, relation);
+                    }
+
+                    if (string.IsNullOrEmpty(existing.Person.ImageUrl) && member.Images != null)
+                    {
+                        existing.Person.ImageUrl = member.Images.Thumbnail();
+                    }
+
+                    continue;
+                }
+
+                var person = new PersonInfo
+                {
+                    Name = name,
+                    Type = type,
+                    Role = relation,
+                    ImageUrl = member.Images == null ? null : member.Images.Thumbnail(),
+                };
+
+                if (member.Id > 0)
+                {
+                    person.ProviderIds[BangumiConstants.PersonProviderId] =
+                        member.Id.ToString(CultureInfo.InvariantCulture);
+                }
+
+                var entry = new CrewEntry
+                {
+                    Priority = priority,
+                    Sequence = sequence++,
+                    Person = person,
+                };
+
+                index[key] = entry;
+                ranked.Add(entry);
+            }
+
+            // Priority first, then Bangumi's own order, which is roughly billing order inside a job.
+            foreach (var entry in ranked.OrderBy(e => e.Priority).ThenBy(e => e.Sequence))
+            {
+                crew.Add(entry.Person);
+            }
+
+            return crew;
+        }
+
+        /// <summary>A crew credit while it is still being merged; <see cref="PersonInfo"/> has no rank field.</summary>
+        private sealed class CrewEntry
+        {
+            public int Priority;
+
+            public int Sequence;
+
+            public PersonInfo Person;
+        }
+
+        private const int UnmappedPriority = 90;
+
+        private const int DefaultUnmappedRank = 6;
+
+        /// <summary>
+        /// Emby only knows eight <see cref="PersonType"/> values, so every other Bangumi job lands in
+        /// one bucket. This orders that bucket by how much a viewer cares, which is what a cap cuts on.
+        /// </summary>
+        private static readonly Dictionary<string, int> UnmappedRanks =
+            new Dictionary<string, int>(StringComparer.Ordinal)
+            {
+                { "副导演", 0 },
+                { "副監督", 0 },
+                { "总作画监督", 0 },
+                { "総作画監督", 0 },
+                { "人物设定", 0 },
+                { "人物設定", 0 },
+                { "角色设计", 0 },
+                { "音响监督", 1 },
+                { "音響監督", 1 },
+                { "美术监督", 1 },
+                { "美術監督", 1 },
+                { "摄影监督", 1 },
+                { "撮影監督", 1 },
+                { "色彩设计", 1 },
+                { "色彩設計", 1 },
+                { "剪辑", 1 },
+                { "編集", 1 },
+                { "作画监督", 2 },
+                { "作畫監督", 2 },
+                { "机械设定", 2 },
+                { "美术设计", 2 },
+                { "美術設定", 2 },
+                { "道具设计", 2 },
+                { "3DCG", 2 },
+                { "特效", 3 },
+                { "监修", 3 },
+                { "设定考证", 3 },
+                { "設定考証", 3 },
+                { "主动画师", 4 },
+                { "音效", 4 },
+                { "录音", 4 },
+                { "摄影", 5 },
+                { "背景美术", 5 },
+                { "原画", 7 },
+                { "第二原画", 8 },
+                { "动画", 8 },
+                { "動画", 8 },
+                { "在线剪辑", 8 },
+                { "制作管理", 8 },
+                { "制作进行", 9 },
+                { "协力", 9 },
+                { "企画协力", 9 },
+                { "特别鸣谢", 9 },
+            };
+
+        private static int UnmappedRankOf(string relation)
+        {
+            int rank;
+            return UnmappedRanks.TryGetValue(relation, out rank) ? rank : DefaultUnmappedRank;
+        }
+
+        private static int PriorityOf(PersonType type)
+        {
+            switch (type)
+            {
+                case PersonType.Director: return 0;
+                case PersonType.Writer: return 10;
+                case PersonType.Composer: return 20;
+                case PersonType.Lyricist: return 30;
+                case PersonType.Conductor: return 40;
+                case PersonType.Producer: return 50;
+                case PersonType.GuestStar: return 60;
+                default: return 70;
+            }
+        }
+
+        /// <summary>
+        /// Joins two credits into one "A / B / C" string. Either side may already be a merged list, so
+        /// both are split again: the result stays duplicate free whichever way round it is called.
+        /// </summary>
+        private static string MergeRole(string existing, string addition)
+        {
+            if (string.IsNullOrWhiteSpace(addition)) return existing;
+            if (string.IsNullOrWhiteSpace(existing)) return addition.Trim();
+
+            var parts = new List<string>();
+            AppendRoleParts(parts, existing);
+            var before = parts.Count;
+            AppendRoleParts(parts, addition);
+            if (parts.Count == before) return existing;
+
+            // Emby stores the role in a single column that the web client shows on one line.
+            var text = new StringBuilder();
+            foreach (var part in parts)
+            {
+                var cost = text.Length == 0 ? part.Length : part.Length + 3;
+                if (text.Length + cost > MaxRoleLength) break;
+                if (text.Length > 0) text.Append(" / ");
+                text.Append(part);
+            }
+
+            return text.Length == 0 ? existing : text.ToString();
+        }
+
+        private static void AppendRoleParts(List<string> parts, string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+
+            foreach (var raw in text.Split(new[] { " / " }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var part = raw.Trim();
+                if (part.Length == 0) continue;
+                if (parts.Contains(part, StringComparer.Ordinal)) continue;
+                parts.Add(part);
+            }
+        }
+
+        private const int MaxRoleLength = 160;
+
+        /// <summary>
+        /// The subject-level character list carries the Japanese name only; the Chinese rendering
+        /// is an infobox entry on the character itself, hence the optional extra request.
+        /// </summary>
+        private async Task<string> ResolveCharacterNameAsync(
+            BangumiRelatedCharacter character,
+            PluginOptions options,
+            LookupBudget lookups,
+            CancellationToken cancellationToken)
+        {
+            var fallback = character == null || string.IsNullOrWhiteSpace(character.Name)
+                ? null
+                : character.Name.Trim();
+
+            if (character == null || character.Id <= 0) return fallback;
+            if (!options.TranslateCharacterNames || !lookups.Take()) return fallback;
+
+            var detail = await Api.GetCharacterAsync(character.Id, cancellationToken).ConfigureAwait(false);
+            if (detail == null) return fallback;
+
+            var chinese = detail.ChineseName();
+            return string.IsNullOrWhiteSpace(chinese) ? fallback : chinese.Trim();
+        }
+
+        private async Task<string> ResolvePersonNameAsync(
+            int personId,
+            string rawName,
+            PluginOptions options,
+            LookupBudget lookups,
+            CancellationToken cancellationToken)
+        {
+            var fallback = string.IsNullOrWhiteSpace(rawName) ? null : rawName.Trim();
+
+            if (personId <= 0) return fallback;
+            if (!options.TranslatePersonNames || !lookups.Take()) return fallback;
+
+            var detail = await Api.GetPersonAsync(personId, cancellationToken).ConfigureAwait(false);
+            if (detail == null) return fallback;
+
+            var chinese = detail.ChineseName();
+            return string.IsNullOrWhiteSpace(chinese) ? fallback : chinese.Trim();
+        }
+
+        /// <summary>A plain counter; async methods cannot take a <c>ref int</c>.</summary>
+        private sealed class LookupBudget
+        {
+            private int _left;
+
+            public LookupBudget(int budget)
+            {
+                _left = budget;
+            }
+
+            public int Spent { get; private set; }
+
+            public bool Take()
+            {
+                if (_left <= 0) return false;
+                _left--;
+                Spent++;
+                return true;
+            }
         }
 
         private static int RelationRank(string relation)
