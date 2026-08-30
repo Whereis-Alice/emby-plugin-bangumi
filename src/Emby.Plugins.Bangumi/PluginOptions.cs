@@ -172,6 +172,16 @@ namespace Emby.Plugins.Bangumi
         [Description("为演员 / 制作人员的人物页面填写简介、生日、出生地和头像（来自 /v0/persons/{id}）。关闭后人物页只有名字和从条目带过来的头像。")]
         public bool ImportPersonMetadata { get; set; } = true;
 
+        [DisplayName("补全人物元数据任务上限")]
+        [Description("计划任务「Bangumi：补全人物元数据」单次最多处理多少个人物。0 表示不限，人物很多时可以先设成 200 分几晚跑完。")]
+        [MinValue(0)]
+        [MaxValue(5000)]
+        public int PersonTaskLimit { get; set; } = 0;
+
+        [DisplayName("重试没有头像的人物")]
+        [Description("Bangumi 上有相当一部分制作人员根本没有照片，默认不再为他们重复请求。打开后每次任务都会重试，适合怀疑头像下载失败时临时开启。")]
+        public bool PersonTaskRetryMissingPortraits { get; set; } = false;
+
         // ---------- 网络 ----------
 
         [DisplayName("代理地址")]
