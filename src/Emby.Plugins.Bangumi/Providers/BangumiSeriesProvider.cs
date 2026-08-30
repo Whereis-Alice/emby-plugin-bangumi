@@ -83,10 +83,14 @@ namespace Emby.Plugins.Bangumi.Providers
 
             if (subject == null)
             {
-                var ranked = await SearchAsync(
+                // Unattended refreshes go through the confidence gate. Writing the wrong subject id
+                // here is not a title typo: artwork, the whole episode list and every credited person
+                // follow from it, and nothing in the UI hints that it happened.
+                var outcome = await SearchDetailedAsync(
                     info.Name, info.Path, BangumiConstants.SubjectType.Anime, info.Year, cancellationToken)
                     .ConfigureAwait(false);
-                subject = ranked.FirstOrDefault();
+                subject = await HydrateAsync(PickAutoMatch(outcome, info.Name, options), cancellationToken)
+                    .ConfigureAwait(false);
             }
 
             if (subject == null)

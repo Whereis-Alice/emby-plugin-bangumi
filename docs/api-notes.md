@@ -33,7 +33,7 @@ Invoke-RestMethod -Uri 'https://api.bgm.tv/v0/subjects/552533' `
 | GET | `/v0/subjects/{id}/persons` | 制作人员。552533 实测 **330 条** |
 | GET | `/v0/subjects/{id}/characters` | 角色与声优。552533 实测 **38 条，全部带 `actors[]`** |
 | GET | `/v0/subjects/{id}/subjects` | 关联条目，`relation` 实测值包括 `续集`/`前传`/`书籍`/`片头曲`/`片尾曲`/`原声集` |
-| GET | `/search/subject/{keyword}?type=2&responseGroup=large&max_results=N` | 旧版搜索，作为 `/v0/search` 失败时的兜底 |
+| GET | `/search/subject/{keyword}?type=2&responseGroup=large&max_results=N` | 旧版搜索。**不是「v0 失败时的兜底」，而是必须跑的第二轮**，见 1.1。返回的是残缺条目 |
 | GET | `/v0/persons/{id}` | 人物详情。中文名、性别、生日、出生地、身高、别名全在 `infobox` 里，不是顶层字段 |
 | GET | `/v0/characters/{id}` | 角色详情。同上，`infobox` 里的「简体中文名」是唯一的中文名来源 |
 | POST | `/v0/search/persons` | body `{"keyword":"..."}`，用于 Emby「识别」界面按名字找人物 |
@@ -47,6 +47,43 @@ total_episodes, collection, id, eps, meta_tags, volumes, series, locked, nsfw, t
 
 `type` 枚举里 **2 = Anime**；`/v0/episodes` 的 `type` 里 **0 = 本篇**，1 = SP，2 = OP，3 = ED，
 4 = 预告/宣传，5 = MAD，6 = 其他。
+
+### 1.1 🔑 `POST /v0/search/subjects` 的索引有真实缺口
+
+v0 搜索会漏条目，而且漏得毫无规律。实测（2026-08-31，直连 `api.bgm.tv`，无 Token）：
+
+| 关键词 | `POST /v0/search/subjects` | `GET /search/subject/{kw}` |
+|---|---|---|
+| `ギルティホール` | 查不到；只返回 `罪恶王冠`、`罪恶装备` 等字面相近项 | **第 1 条 = `516604` 罪恶之渊** |
+| `ハーレムきゃんぷっ！` | 查不到 | **第 1 条 = `395537` 后宫露营！** |
+
+- 与 NSFW **无关**：请求体里加 `filter.nsfw: true` 结果不变。
+- 与 Token **无关**：旧版接口匿名即可拿到。
+- 与打分**无关**：候选池里根本没有正确条目。
+
+所以正确的用法是把旧版接口当作**第二轮 pass**：第一轮 v0 跑完所有关键词，若最高标题分
+仍低于「精确命中」阈值，就用同一批关键词再跑一轮旧版接口，两轮并进同一个候选池后统一排序。
+写成「v0 返回空数组时才用旧版」是无效的——v0 几乎总能返回一堆字面相近的垃圾，永远不为空。
+
+### 1.2 旧版搜索返回的是残缺条目
+
+`responseGroup=large` 也只有
+`id` / `name` / `name_cn` / `summary` / `air_date` / `images` / `rating` / `eps`，
+**没有 `infobox` / `tags` / `meta_tags` / `platform`**。直接拿这个对象去做字段映射，
+studios / genres / tags 会静默变空。选中之后必须再 `GET /v0/subjects/{id}` 补全。
+
+对比之下 `POST /v0/search/subjects` 的 `data[]` 元素与 `/v0/subjects/{id}` 同构，
+不需要补。
+
+### 1.3 受限条目的子资源返回 404，不是 401
+
+无 Token 时，NSFW 条目的 `/v0/subjects/{id}/persons` 与 `/v0/subjects/{id}/characters`
+都返回 `404 {"title":"Not Found","description":"resource can't be found in the database or has been removed"}`，
+而 `/v0/subjects/{id}` 本身**照常返回**。实测 404 的：`516604`、`621602`、`395537`、`295001`；
+同一时刻 `312298` = 55 persons / 4 characters、`345802` = 88 persons 正常。
+
+后果是「刮削看起来成功了，但演员表只有 infobox 里那两三条」，且与「这个条目本来就没录人员」
+在响应上完全无法区分。填 Token 即可恢复。
 
 ## 2. 反序列化陷阱
 

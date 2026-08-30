@@ -88,10 +88,11 @@ namespace Emby.Plugins.Bangumi.Providers
 
             if (subject == null)
             {
-                var ranked = await SearchAsync(
+                var outcome = await SearchDetailedAsync(
                     info.Name, info.Path, BangumiConstants.SubjectType.Anime, info.Year, cancellationToken)
                     .ConfigureAwait(false);
-                subject = ranked.FirstOrDefault();
+                subject = await HydrateAsync(PickAutoMatch(outcome, info.Name, options), cancellationToken)
+                    .ConfigureAwait(false);
             }
 
             if (subject == null)

@@ -1,6 +1,7 @@
 using System;
 using Emby.Plugins.Bangumi.Api;
 using MediaBrowser.Common;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Model.Logging;
 
@@ -10,10 +11,15 @@ namespace Emby.Plugins.Bangumi
     {
         private readonly ILogger _logger;
         private readonly BangumiApiClient _api;
+        private readonly IApplicationHost _applicationHost;
+        private readonly object _libraryManagerLock = new object();
+        private ILibraryManager _libraryManager;
+        private bool _libraryManagerResolved;
 
         public Plugin(IApplicationHost applicationHost, ILogManager logManager)
             : base(applicationHost)
         {
+            _applicationHost = applicationHost;
             _logger = logManager.GetLogger(BangumiConstants.PluginName);
             // GetOptions is passed as a factory rather than a snapshot so that saving the
             // configuration page takes effect without restarting the server.
@@ -70,6 +76,41 @@ namespace Emby.Plugins.Bangumi
         {
             var instance = Instance;
             return instance != null ? instance.GetOptions() : new PluginOptions();
+        }
+
+        /// <summary>
+        /// The library, when the host is willing to hand it over.
+        ///
+        /// Providers only receive an <see cref="MediaBrowser.Controller.Providers.ItemLookupInfo"/>,
+        /// which carries the parsed name but not the original-language title another scraper may
+        /// already have stored. That title is the single best Bangumi search key available, so the
+        /// providers look the item back up by path. Resolution failure is not fatal anywhere:
+        /// every caller treats null as "no extra hints".
+        /// </summary>
+        internal static ILibraryManager TryLibraryManager()
+        {
+            var instance = Instance;
+            if (instance == null) return null;
+
+            lock (instance._libraryManagerLock)
+            {
+                if (instance._libraryManagerResolved) return instance._libraryManager;
+                instance._libraryManagerResolved = true;
+
+                try
+                {
+                    if (instance._applicationHost != null)
+                    {
+                        instance._libraryManager = instance._applicationHost.TryResolve<ILibraryManager>();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    instance._logger.ErrorException("Bangumi could not resolve ILibraryManager", ex);
+                }
+
+                return instance._libraryManager;
+            }
         }
     }
 }

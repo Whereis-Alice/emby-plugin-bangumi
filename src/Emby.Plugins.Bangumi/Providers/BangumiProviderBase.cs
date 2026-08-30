@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -69,6 +70,16 @@ namespace Emby.Plugins.Bangumi.Providers
             };
 
         private static readonly string[] AliasKeys = { "别名", "別名", "英文名", "罗马字", "中文名" };
+
+        /// <summary>
+        /// Title similarity that is trusted on its own, with no other signal agreeing. Anything
+        /// below this needs the air year to line up before an unattended refresh may write it.
+        /// </summary>
+        private const int StrongTitleScore = 550;
+
+        /// <summary>Extensions considered a video file when mining a folder for title hints.</summary>
+        private static readonly string[] MediaExtensions =
+            { ".mkv", ".mp4", ".m2ts", ".ts", ".avi", ".mov", ".flv", ".rmvb", ".webm", ".wmv", ".iso" };
 
         /// <summary>
         /// Bangumi job title -> Emby person type, for the jobs that have an exact counterpart.
@@ -272,10 +283,12 @@ namespace Emby.Plugins.Bangumi.Providers
         /// season its own subject, so "Re:Zero 第四季" is a real title there), then fall back
         /// to the bare name.
         /// </summary>
-        protected Task<List<BangumiSubject>> SearchAsync(
+        protected async Task<List<BangumiSubject>> SearchAsync(
             string rawTitle, int subjectType, int? year, CancellationToken cancellationToken)
         {
-            return SearchAsync(rawTitle, null, subjectType, year, cancellationToken);
+            var outcome = await SearchDetailedAsync(rawTitle, null, subjectType, year, cancellationToken)
+                .ConfigureAwait(false);
+            return outcome.Ranked;
         }
 
         /// <summary>
@@ -291,38 +304,326 @@ namespace Emby.Plugins.Bangumi.Providers
         protected async Task<List<BangumiSubject>> SearchAsync(
             string rawTitle, string pathHint, int subjectType, int? year, CancellationToken cancellationToken)
         {
-            var options = CurrentOptions;
-            var titles = BuildTitleCandidates(rawTitle, pathHint);
-            if (titles.Count == 0) return new List<BangumiSubject>();
-
-            var attempted = new List<string>();
-            var results = new List<BangumiSubject>();
-
-            foreach (var keyword in EnumerateKeywords(titles))
-            {
-                if (attempted.Contains(keyword)) continue;
-                attempted.Add(keyword);
-
-                results = await Api
-                    .SearchSubjectsAsync(keyword, subjectType, options.SearchResultLimit, cancellationToken)
-                    .ConfigureAwait(false);
-
-                Verbose("Bangumi search \"{0}\" -> {1} candidate(s)", keyword, results == null ? 0 : results.Count);
-                if (results != null && results.Count > 0) break;
-            }
-
-            if (results == null) results = new List<BangumiSubject>();
-            return Rank(results, titles, year);
+            var outcome = await SearchDetailedAsync(rawTitle, pathHint, subjectType, year, cancellationToken)
+                .ConfigureAwait(false);
+            return outcome.Ranked;
         }
 
         /// <summary>
-        /// The item name first, then the folder name when it normalises to something different.
+        /// Everything <see cref="PickAutoMatch"/> needs to decide whether the best candidate is
+        /// good enough to write without a human looking at it.
         /// </summary>
-        private static List<NormalizedTitle> BuildTitleCandidates(string rawTitle, string pathHint)
+        protected sealed class SearchOutcome
+        {
+            public SearchOutcome()
+            {
+                Ranked = new List<BangumiSubject>();
+            }
+
+            /// <summary>All candidates seen, best first. Never filtered.</summary>
+            public List<BangumiSubject> Ranked { get; set; }
+
+            /// <summary>Title closeness of <see cref="Ranked"/>[0] in 0..1000.</summary>
+            public int TitleScore { get; set; }
+
+            /// <summary>True when <see cref="Ranked"/>[0] aired in the year the caller asked for.</summary>
+            public bool YearMatched { get; set; }
+        }
+
+        /// <summary>
+        /// Runs every keyword the item can offer and ranks the union of the results.
+        ///
+        /// Searching until the first keyword returns something is not enough: Bangumi almost always
+        /// returns something, just not the right thing. A library where TMDB has already renamed the
+        /// series to its Chinese release title hands over "罪恶之渊", which matches a 2013 show about
+        /// scissors, while "ギルティホール" sitting in the very same item's original-title field is an
+        /// exact hit. So all keywords are tried and pooled, and the loop only stops early once a
+        /// candidate matches a title outright, which keeps the common case at one request.
+        /// </summary>
+        protected async Task<SearchOutcome> SearchDetailedAsync(
+            string rawTitle, string pathHint, int subjectType, int? year, CancellationToken cancellationToken)
+        {
+            var options = CurrentOptions;
+            var titles = BuildTitleCandidates(rawTitle, pathHint, LocalTitleHints(pathHint, options));
+            var outcome = new SearchOutcome();
+            if (titles.Count == 0) return outcome;
+
+            var keywords = new List<string>();
+            foreach (var keyword in EnumerateKeywords(titles))
+            {
+                if (string.IsNullOrWhiteSpace(keyword)) continue;
+                if (keywords.Any(k => string.Equals(k, keyword, StringComparison.OrdinalIgnoreCase))) continue;
+                keywords.Add(keyword);
+            }
+
+            var pool = new List<BangumiSubject>();
+            var seen = new HashSet<int>();
+
+            await SearchPassAsync(keywords, titles, year, subjectType, false, options, pool, seen, outcome, cancellationToken)
+                .ConfigureAwait(false);
+
+            // A weak winner here does not mean Bangumi lacks the show. The v0 index has holes -
+            // "ギルティホール" and "ハーレムきゃんぷっ！" return no trace of the anime they name - while it
+            // still answers with *something* for any input, so the miss looks like a bad match rather
+            // than a missing entry. The legacy index has both as its first hit, hence a second pass.
+            if (options.UseLegacySearchFallback && outcome.TitleScore < StrongTitleScore)
+            {
+                await SearchPassAsync(keywords, titles, year, subjectType, true, options, pool, seen, outcome, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            if (outcome.Ranked.Count == 0 && pool.Count > 0) Rank(pool, titles, year, outcome);
+            return outcome;
+        }
+
+        /// <summary>
+        /// Adds every hit of one search endpoint to <paramref name="pool"/> and re-ranks after each
+        /// keyword, stopping as soon as a candidate matches a title outright.
+        /// </summary>
+        private async Task SearchPassAsync(
+            List<string> keywords, List<NormalizedTitle> titles, int? year, int subjectType, bool legacy,
+            PluginOptions options, List<BangumiSubject> pool, HashSet<int> seen, SearchOutcome outcome,
+            CancellationToken cancellationToken)
+        {
+            foreach (var keyword in keywords)
+            {
+                var found = legacy
+                    ? await Api.SearchSubjectsLegacyAsync(keyword, subjectType, options.SearchResultLimit, cancellationToken)
+                        .ConfigureAwait(false)
+                    : await Api.SearchSubjectsAsync(keyword, subjectType, options.SearchResultLimit, cancellationToken)
+                        .ConfigureAwait(false);
+
+                var added = 0;
+                if (found != null)
+                {
+                    foreach (var subject in found)
+                    {
+                        if (subject == null || subject.Id <= 0) continue;
+                        if (!seen.Add(subject.Id)) continue;
+                        pool.Add(subject);
+                        added++;
+                    }
+                }
+
+                Verbose(
+                    "Bangumi {0} search \"{1}\" -> {2} candidate(s), {3} new", legacy ? "legacy" : "v0", keyword,
+                    found == null ? 0 : found.Count, added);
+
+                if (added == 0) continue;
+
+                Rank(pool, titles, year, outcome);
+                if (outcome.TitleScore >= StrongTitleScore) return;
+            }
+        }
+
+        /// <summary>
+        /// The complete subject behind a candidate.
+        ///
+        /// The legacy search index answers without <c>infobox</c>, <c>tags</c>, <c>meta_tags</c> or
+        /// <c>platform</c>, so writing one of its hits straight to an item would silently drop the
+        /// studios, the genres and every tag. <see cref="Api"/> caches, so the extra call costs one
+        /// request per newly matched item at most.
+        /// </summary>
+        protected async Task<BangumiSubject> HydrateAsync(BangumiSubject subject, CancellationToken cancellationToken)
+        {
+            if (subject == null || subject.Id <= 0) return subject;
+            if (subject.Infobox != null && subject.Infobox.Count > 0) return subject;
+
+            var full = await Api.GetSubjectAsync(subject.Id, cancellationToken).ConfigureAwait(false);
+            if (full == null) return subject;
+
+            Verbose("Bangumi hydrated partial subject {0} ({1})", subject.Id, full.Name);
+            return full;
+        }
+
+        /// <summary>
+        /// The candidate an unattended refresh is allowed to write, or null when nothing is close
+        /// enough. Manual identification is untouched: the search UI still lists every candidate.
+        ///
+        /// A wrong subject id is far more expensive than a missing one, because it does not stop at
+        /// the title - artwork, episode list, studios and every credited person come from that
+        /// subject too, and the mistake is invisible until someone opens the series.
+        /// </summary>
+        protected BangumiSubject PickAutoMatch(SearchOutcome outcome, string queriedName, PluginOptions options)
+        {
+            if (outcome == null) return null;
+
+            var best = outcome.Ranked.FirstOrDefault();
+            if (best == null) return null;
+
+            var floor = options.MinTitleMatchScore;
+            if (floor <= 0) return best;
+            if (outcome.TitleScore >= StrongTitleScore) return best;
+            if (outcome.TitleScore >= floor && outcome.YearMatched) return best;
+
+            if (Logger != null)
+            {
+                Logger.Info(
+                    "Bangumi refused to auto-match \"{0}\": best candidate {1} \"{2}\" only scores {3}/1000 on the " +
+                    "title (floor {4}, air year agrees: {5}). Use 「识别」 to pick it manually, or lower " +
+                    "「标题匹配最低分」.",
+                    queriedName,
+                    best.Id,
+                    string.IsNullOrWhiteSpace(best.NameCn) ? best.Name : best.NameCn,
+                    outcome.TitleScore,
+                    floor,
+                    outcome.YearMatched);
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Title sources that only exist on this machine: the original-language title another
+        /// scraper already stored on the item, and the names of the media files in the folder.
+        ///
+        /// Emby hands a provider the display name and the path, nothing else. The Japanese title is
+        /// what Bangumi indexes best, and it is usually sitting right there in the item's
+        /// 「原始标题」 field; the file names carry the same information for libraries whose folders
+        /// are named in Chinese but whose releases are not ("Harem Camp! - 03.5.mkv").
+        /// </summary>
+        private List<string> LocalTitleHints(string pathHint, PluginOptions options)
+        {
+            var hints = new List<string>();
+            if (string.IsNullOrWhiteSpace(pathHint)) return hints;
+
+            if (options.UseOriginalTitleHint)
+            {
+                try
+                {
+                    var library = Plugin.TryLibraryManager();
+                    if (library != null)
+                    {
+                        var item = library.FindByPath(pathHint, null);
+                        if (item != null && !string.IsNullOrWhiteSpace(item.OriginalTitle))
+                        {
+                            hints.Add(item.OriginalTitle);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (Logger != null)
+                    {
+                        Logger.ErrorException("Bangumi could not read the stored original title of {0}", ex, pathHint);
+                    }
+                }
+            }
+
+            if (options.MaxFileNameHints > 0)
+            {
+                hints.AddRange(FileNameHints(pathHint, options.MaxFileNameHints));
+            }
+
+            if (hints.Count > 0) Verbose("Bangumi local title hints for {0}: {1}", pathHint, string.Join(" | ", hints));
+            return hints;
+        }
+
+        /// <summary>
+        /// Distinct title stems of the media files under <paramref name="path"/>, most frequent
+        /// first. A season folder repeats the same stem once per episode, so frequency is a good
+        /// proxy for "this is the show's name".
+        /// </summary>
+        private List<string> FileNameHints(string path, int limit)
+        {
+            var hints = new List<string>();
+
+            try
+            {
+                if (!Directory.Exists(path)) return hints;
+
+                var counted = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var order = new List<string>();
+
+                foreach (var file in EnumerateMediaFiles(path))
+                {
+                    // Deliberately the season-stripped keyword: a series folder that holds
+                    // several season subfolders would otherwise vote for whichever season has the
+                    // most files, and an exact hit on "<show> 2nd Season" scores 1000 and wins.
+                    // The Emby item being scraped here is the show, not one of its seasons, and
+                    // BangumiSeasonProvider resolves seasons from the sequel chain afterwards.
+                    var normalized = TitleNormalizer.NormalizeFileName(Path.GetFileName(file));
+                    var keyword = normalized == null ? null : normalized.Keyword;
+                    if (string.IsNullOrWhiteSpace(keyword) || keyword.Length < 2) continue;
+
+                    int count;
+                    if (counted.TryGetValue(keyword, out count))
+                    {
+                        counted[keyword] = count + 1;
+                    }
+                    else
+                    {
+                        counted[keyword] = 1;
+                        order.Add(keyword);
+                    }
+                }
+
+                foreach (var keyword in order.OrderByDescending(k => counted[k]).Take(limit))
+                {
+                    hints.Add(keyword);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (Logger != null) Logger.ErrorException("Bangumi could not list media files under {0}", ex, path);
+            }
+
+            return hints;
+        }
+
+        /// <summary>The folder itself, then one level of subfolders, capped so a huge library folder cannot stall a refresh.</summary>
+        private static IEnumerable<string> EnumerateMediaFiles(string path)
+        {
+            const int cap = 200;
+            var yielded = 0;
+
+            foreach (var file in Directory.EnumerateFiles(path))
+            {
+                if (!IsMediaFile(file)) continue;
+                yield return file;
+                if (++yielded >= cap) yield break;
+            }
+
+            foreach (var directory in Directory.EnumerateDirectories(path))
+            {
+                foreach (var file in Directory.EnumerateFiles(directory))
+                {
+                    if (!IsMediaFile(file)) continue;
+                    yield return file;
+                    if (++yielded >= cap) yield break;
+                }
+            }
+        }
+
+        private static bool IsMediaFile(string file)
+        {
+            var extension = Path.GetExtension(file);
+            if (string.IsNullOrEmpty(extension)) return false;
+
+            foreach (var candidate in MediaExtensions)
+            {
+                if (string.Equals(candidate, extension, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// The item name first, then the folder name when it normalises to something different,
+        /// then whatever the machine itself could tell us (<paramref name="extras"/>).
+        ///
+        /// Order is the search order, and it is deliberate: the name the user sees is tried first so
+        /// a correctly named library still costs a single request, and the guessed titles only get a
+        /// turn after that.
+        /// </summary>
+        private static List<NormalizedTitle> BuildTitleCandidates(string rawTitle, string pathHint, List<string> extras)
         {
             var titles = new List<NormalizedTitle>();
 
-            foreach (var source in new[] { rawTitle, FolderNameOf(pathHint) })
+            var sources = new List<string> { rawTitle, FolderNameOf(pathHint) };
+            if (extras != null) sources.AddRange(extras);
+
+            foreach (var source in sources)
             {
                 if (string.IsNullOrWhiteSpace(source)) continue;
 
@@ -378,10 +679,17 @@ namespace Emby.Plugins.Bangumi.Providers
             return null;
         }
 
-        /// <summary>Sorts candidates best-first without dropping any of them.</summary>
-        private List<BangumiSubject> Rank(List<BangumiSubject> candidates, List<NormalizedTitle> titles, int? year)
+        /// <summary>
+        /// Sorts candidates best-first without dropping any of them, and records how well the
+        /// winner actually matched so <see cref="PickAutoMatch"/> can refuse a bad one.
+        /// </summary>
+        private void Rank(List<BangumiSubject> candidates, List<NormalizedTitle> titles, int? year, SearchOutcome outcome)
         {
-            if (candidates == null || candidates.Count == 0) return new List<BangumiSubject>();
+            outcome.Ranked = new List<BangumiSubject>();
+            outcome.TitleScore = 0;
+            outcome.YearMatched = false;
+
+            if (candidates == null || candidates.Count == 0) return;
 
             var options = CurrentOptions;
             var usable = candidates
@@ -400,11 +708,12 @@ namespace Emby.Plugins.Bangumi.Providers
             });
 
             var scored = usable
-                .Select((subject, index) => new
+                .Select((subject, index) =>
                 {
-                    subject,
-                    index,
-                    score = Score(subject, titles, year, exactSeasonAvailable),
+                    int titleScore;
+                    bool yearMatched;
+                    var score = Score(subject, titles, year, exactSeasonAvailable, out titleScore, out yearMatched);
+                    return new { subject, index, score, titleScore, yearMatched };
                 })
                 .OrderByDescending(x => x.score)
                 .ThenBy(x => x.index)
@@ -415,16 +724,34 @@ namespace Emby.Plugins.Bangumi.Providers
                 foreach (var entry in scored.Take(8))
                 {
                     Logger.Info(
-                        "Bangumi candidate score={0} id={1} name={2} name_cn={3} date={4}",
-                        entry.score, entry.subject.Id, entry.subject.Name, entry.subject.NameCn, entry.subject.Date);
+                        "Bangumi candidate score={0} title={1} year_ok={2} id={3} name={4} name_cn={5} date={6}",
+                        entry.score, entry.titleScore, entry.yearMatched, entry.subject.Id, entry.subject.Name,
+                        entry.subject.NameCn, entry.subject.Date);
                 }
             }
 
-            return scored.Select(x => x.subject).ToList();
+            outcome.Ranked = scored.Select(x => x.subject).ToList();
+
+            var winner = scored.FirstOrDefault();
+            if (winner != null)
+            {
+                outcome.TitleScore = winner.titleScore;
+                outcome.YearMatched = winner.yearMatched;
+            }
         }
 
-        private int Score(BangumiSubject subject, List<NormalizedTitle> queries, int? year, bool exactSeasonAvailable)
+        /// <summary>
+        /// Overall desirability of a candidate. <paramref name="titleScore"/> and
+        /// <paramref name="yearMatched"/> are reported separately because the total mixes in
+        /// popularity and platform nudges, which say nothing about whether this is the right show.
+        /// </summary>
+        private int Score(
+            BangumiSubject subject, List<NormalizedTitle> queries, int? year, bool exactSeasonAvailable,
+            out int titleScore, out bool yearMatched)
         {
+            titleScore = 0;
+            yearMatched = false;
+
             var score = 0;
             var wantedSeason = WantedSeason(queries);
 
@@ -488,6 +815,7 @@ namespace Emby.Plugins.Bangumi.Providers
                 }
             }
 
+            titleScore = best;
             score += best;
 
             // Bangumi files every season as its own subject, so the season marker carried by the
@@ -501,7 +829,11 @@ namespace Emby.Plugins.Bangumi.Providers
             if (year.HasValue && subjectYear.HasValue)
             {
                 var delta = Math.Abs(subjectYear.Value - year.Value);
-                if (delta == 0) score += 120;
+                if (delta == 0)
+                {
+                    score += 120;
+                    yearMatched = true;
+                }
                 else if (delta == 1) score += 40;
                 else score -= 60;
             }

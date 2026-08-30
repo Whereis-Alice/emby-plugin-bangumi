@@ -48,6 +48,7 @@ namespace Emby.Plugins.Bangumi.Api
         private string _transportKey;
         private long _nextAllowedTicks;
         private bool _disposed;
+        private int _warnedRestrictedWithoutToken;
 
         public BangumiApiClient(ILogger logger, Func<PluginOptions> optionsFactory)
         {
@@ -140,6 +141,7 @@ namespace Emby.Plugins.Bangumi.Api
                 var previous = _http;
                 _http = client;
                 _transportKey = key;
+                Interlocked.Exchange(ref _warnedRestrictedWithoutToken, 0);
 
                 if (previous != null)
                 {
@@ -148,6 +150,30 @@ namespace Emby.Plugins.Bangumi.Api
 
                 return client;
             }
+        }
+
+        /// <summary>
+        /// Bangumi answers 404 - not 401 - for the sub-resources of a restricted (NSFW) subject
+        /// when the request carries no token, so a subject that scrapes fine still ends up with no
+        /// staff and no characters. That is indistinguishable from a genuinely empty subject unless
+        /// we say so, hence this one-shot hint. Reset whenever the transport is rebuilt, so setting
+        /// a token and saving the page lets it fire again if it is still wrong.
+        /// </summary>
+        private void WarnRestrictedWithoutToken(string url, PluginOptions options)
+        {
+            if (_logger == null) return;
+            if (options != null && !string.IsNullOrWhiteSpace(options.AccessToken)) return;
+            if (string.IsNullOrEmpty(url)) return;
+            if (url.IndexOf("/persons", StringComparison.OrdinalIgnoreCase) < 0 &&
+                url.IndexOf("/characters", StringComparison.OrdinalIgnoreCase) < 0) return;
+            if (Interlocked.CompareExchange(ref _warnedRestrictedWithoutToken, 1, 0) != 0) return;
+
+            _logger.Info(
+                "Bangumi returned 404 for {0}. Restricted (NSFW) subjects only expose their staff " +
+                "and characters to an authenticated request, so those subjects will import with " +
+                "little or no cast. Set an access token in the Bangumi plugin settings to fix it. " +
+                "This is logged once per configuration change.",
+                url);
         }
 
         private string BaseUrl(PluginOptions options)
@@ -283,7 +309,11 @@ namespace Emby.Plugins.Bangumi.Api
                     {
                         var status = (int)response.StatusCode;
 
-                        if (status == 404) return null;
+                        if (status == 404)
+                        {
+                            WarnRestrictedWithoutToken(url, options);
+                            return null;
+                        }
 
                         if (status == 429)
                         {
@@ -373,7 +403,16 @@ namespace Emby.Plugins.Bangumi.Api
 
         // ------------------------------------------------------------------ endpoints
 
-        /// <summary>POST /v0/search/subjects, falling back to the legacy GET /search/subject/{keyword}.</summary>
+        /// <summary>
+        /// POST /v0/search/subjects, falling back to the legacy GET /search/subject/{keyword} when
+        /// it returns literally nothing.
+        ///
+        /// The two endpoints are backed by different indexes and the newer one has real gaps: at the
+        /// time of writing "ギルティホール" and "ハーレムきゃんぷっ！" both return zero trace of the show
+        /// they name, while the legacy endpoint returns the exact subject as its first hit. Because
+        /// the v0 index does return *something* for almost any input, callers that care about
+        /// correctness should pool both endpoints rather than rely on this fallback.
+        /// </summary>
         public async Task<List<BangumiSubject>> SearchSubjectsAsync(
             string keyword, int subjectType, int limit, CancellationToken cancellationToken)
         {
@@ -408,6 +447,21 @@ namespace Emby.Plugins.Bangumi.Api
                 _logger.Info("Bangumi: v0 search returned nothing for '{0}', trying the legacy endpoint", keyword);
             }
 
+            return await LegacySearchAsync(keyword, subjectType, limit, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// GET /search/subject/{keyword}, Bangumi's original search index.
+        ///
+        /// Returned subjects are partial: <c>infobox</c>, <c>tags</c>, <c>meta_tags</c>, <c>platform</c>
+        /// and <c>nsfw</c> are simply not in the response, so anything picked from here has to be
+        /// re-fetched through <see cref="GetSubjectAsync"/> before it is written to an item.
+        /// </summary>
+        public async Task<List<BangumiSubject>> SearchSubjectsLegacyAsync(
+            string keyword, int subjectType, int limit, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(keyword)) return new List<BangumiSubject>();
+            limit = Math.Max(1, Math.Min(50, limit));
             return await LegacySearchAsync(keyword, subjectType, limit, cancellationToken).ConfigureAwait(false);
         }
 

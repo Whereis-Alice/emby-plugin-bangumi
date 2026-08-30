@@ -132,6 +132,19 @@ namespace Emby.Plugins.Bangumi.Utils
             { '¾', "3/4" }, { '⅕', "1/5" }, { '⅙', "1/6" }, { '⅛', "1/8" },
         };
 
+        // Episode markers left at the end of a media file name once the bracket blocks are gone:
+        // "罪恶之渊 S01E01", "Harem Camp! - 03.5", "あかね噺 第03話", "Title EP12v2". Only ever applied
+        // to file derived titles, and only at the end, so a title that genuinely ends in a number
+        // ("Persona 5", "Steins;Gate 0") is safe as long as a separator is not in front of it.
+        private static readonly Regex[] EpisodeMarkers =
+        {
+            new Regex(@"\s*[Ss]\d{1,2}\s*[Ee]\d{1,4}(?:\s*[-~]\s*[Ee]?\d{1,4})?\s*$", RegexOptions.Compiled),
+            new Regex(@"\s*第\s*\d{1,4}(?:\s*[-~]\s*\d{1,4})?\s*[话話集回]\s*$", RegexOptions.Compiled),
+            new Regex(@"\s*[-–—]\s*(?:[Ee][Pp]?)?\d{1,4}(?:\.\d)?(?:[vV]\d)?\s*$", RegexOptions.Compiled),
+            new Regex(@"\s+[Ee][Pp]\s*\d{1,4}(?:[vV]\d)?\s*$", RegexOptions.Compiled),
+            new Regex(@"\s*[-–—]\s*\d{1,4}\s*[-~]\s*\d{1,4}\s*$", RegexOptions.Compiled),
+        };
+
         private static readonly Dictionary<char, int> CjkDigits = new Dictionary<char, int>
         {
             { '零', 0 }, { '一', 1 }, { '二', 2 }, { '三', 3 }, { '四', 4 },
@@ -156,6 +169,37 @@ namespace Emby.Plugins.Bangumi.Utils
             result.SeasonNumber = season;
             result.Keyword = string.IsNullOrWhiteSpace(stripped) ? text : stripped;
             return result;
+        }
+
+        /// <summary>
+        /// Same as <see cref="Normalize"/> but also drops the trailing episode marker, for titles
+        /// derived from a media file name rather than from a folder or from Emby's own item name.
+        /// </summary>
+        public static NormalizedTitle NormalizeFileName(string fileName)
+        {
+            return Normalize(StripEpisodeMarker(Clean(fileName)));
+        }
+
+        /// <summary>
+        /// Removes one trailing episode marker. Returns the input unchanged when no marker is
+        /// present or when removing it would leave nothing behind.
+        /// </summary>
+        public static string StripEpisodeMarker(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text;
+
+            foreach (var pattern in EpisodeMarkers)
+            {
+                var match = pattern.Match(text);
+                if (!match.Success) continue;
+
+                var candidate = text.Substring(0, match.Index).Trim();
+                if (candidate.Length == 0) continue;
+
+                return candidate;
+            }
+
+            return text;
         }
 
         /// <summary>Cleaning only, no season handling. Exposed for tests and logging.</summary>

@@ -136,13 +136,13 @@ namespace Emby.Plugins.Bangumi
         [Description("按 主角 → 配角 → 客串 排序后取前 N 位，保证被截断的一定是龙套。")]
         [MinValue(0)]
         [MaxValue(500)]
-        public int MaxVoiceActors { get; set; } = 60;
+        public int MaxVoiceActors { get; set; } = 100;
 
         [DisplayName("制作人员数量上限")]
         [Description("按 监督 → 编剧 → 音乐 → 制片 → 其他 排序后取前 N 位。")]
         [MinValue(0)]
         [MaxValue(500)]
-        public int MaxStaff { get; set; } = 60;
+        public int MaxStaff { get; set; } = 100;
 
         [DisplayName("人员数量总上限")]
         [Description("声优 + 制作人员写入 Emby 的总条数上限，兜底防止单个条目塞进几百号人。")]
@@ -233,6 +233,30 @@ namespace Emby.Plugins.Bangumi
         [MaxValue(50)]
         [IsAdvanced]
         public int SearchResultLimit { get; set; } = 20;
+
+        [DisplayName("标题匹配最低分")]
+        [Description("自动刮削时，候选条目的标题相似度（0-1000）低于此值就拒绝写入，只在手动「识别」时才用。低于 550 分时还要求播出年份完全一致。0 = 关闭校验，永远取第一名。")]
+        [MinValue(0)]
+        [MaxValue(1000)]
+        [IsAdvanced]
+        public int MinTitleMatchScore { get; set; } = 260;
+
+        [DisplayName("同时搜索旧版搜索接口")]
+        [Description("新版 /v0/search/subjects 索引有缺口，「ギルティホール」「ハーレムきゃんぷっ！」这类条目在新接口里查不到任何痕迹，旧版 /search/subject 却能第一条命中。新接口没给出高置信度结果时，再用旧接口把同样的关键词跑一遍。注意旧接口不支持 NSFW 过滤。")]
+        [IsAdvanced]
+        public bool UseLegacySearchFallback { get; set; } = true;
+
+        [DisplayName("使用已有的原始标题辅助搜索")]
+        [Description("读取条目「原始标题」字段（通常是 TMDb 写入的日文原名）作为额外搜索关键词。Bangumi 对日文原名的索引远好于中文译名。")]
+        [IsAdvanced]
+        public bool UseOriginalTitleHint { get; set; } = true;
+
+        [DisplayName("文件名标题线索数量")]
+        [Description("从文件夹里的媒体文件名提取多少个候选标题作为额外搜索关键词。适合文件夹是中文名、但发布组文件名是罗马字 / 日文的情况。0 = 关闭。")]
+        [MinValue(0)]
+        [MaxValue(5)]
+        [IsAdvanced]
+        public int MaxFileNameHints { get; set; } = 2;
 
         [DisplayName("刮削器优先级")]
         [Description("数字越小越靠前。设为 -1 可让 Bangumi 排在 TheTVDB / TMDb 之前。")]
