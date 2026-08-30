@@ -17,7 +17,7 @@ namespace Emby.Plugins.Bangumi.Providers
     ///
     /// The mapping itself lives in <see cref="BangumiSeasonResolver"/>; this provider only decides
     /// which strategies to try and which fields are safe to write. Season numbering comes from the
-    /// folder layout and is never touched.
+    /// folder layout and is copied back verbatim so a full refresh cannot clear it.
     /// </summary>
     public class BangumiSeasonProvider : BangumiProviderBase,
         IRemoteMetadataProvider<Season, SeasonInfo>, IHasOrder
@@ -93,8 +93,11 @@ namespace Emby.Plugins.Bangumi.Providers
 
             result.QueriedById = byId;
 
-            // The season number itself comes from the folder layout and must not be touched;
-            // only descriptive fields and the provider id are written here.
+            // The season number comes from the folder layout, so it is echoed back unchanged rather
+            // than left null: a full refresh (ReplaceAllMetadata) merges the provider value verbatim,
+            // and a null there would strip the season of its number and orphan every episode under it.
+            result.Item.IndexNumber = info.IndexNumber;
+
             result.Item.ProviderIds[BangumiConstants.ProviderId] =
                 subject.Id.ToString(CultureInfo.InvariantCulture);
 

@@ -54,6 +54,17 @@ namespace Emby.Plugins.Bangumi.Providers
 
             if (info == null) return result;
 
+            // Numbering is echoed straight back, and that is a hard requirement rather than a
+            // courtesy. Emby's MergeBaseItemData copies IndexNumber unconditionally once the refresh
+            // asked to replace all metadata, so a provider that leaves the field at its default null
+            // does not "keep the file name authority" - it erases the numbering the resolver derived
+            // from the file. Losing ParentIndexNumber is the expensive half: every episode falls out
+            // of its season and Emby invents a fresh "Season 1" per file. Copying the incoming values
+            // makes the merge a no-op for these three fields whichever refresh mode ran.
+            result.Item.IndexNumber = info.IndexNumber;
+            result.Item.ParentIndexNumber = info.ParentIndexNumber;
+            result.Item.IndexNumberEnd = info.IndexNumberEnd;
+
             var isSpecial = info.ParentIndexNumber.HasValue && info.ParentIndexNumber.Value == 0;
 
             var candidates = await ResolveCandidatesAsync(info, options, isSpecial, cancellationToken)
@@ -136,9 +147,6 @@ namespace Emby.Plugins.Bangumi.Providers
                 result.Item.ProviderIds[BangumiConstants.ProviderId] =
                     matchedSubjectId.ToString(CultureInfo.InvariantCulture);
             }
-
-            // IndexNumber / ParentIndexNumber are intentionally left untouched: the file name is the
-            // authority for numbering, and overwriting it here reorders the whole season.
 
             result.HasMetadata = true;
             Verbose("Bangumi subject {0}: episode index {1} matched ep id {2} via {3}",
@@ -241,6 +249,17 @@ namespace Emby.Plugins.Bangumi.Providers
             if (TryGetId(info.ProviderIds, BangumiConstants.EpisodeProviderId, out episodeId))
             {
                 var pinned = episodes.FirstOrDefault(e => e != null && e.Id == episodeId);
+
+                // An id pointing at an episode that has not aired cannot describe a file that exists,
+                // so it is treated as stale rather than as an override. This matters because the id is
+                // derived data the provider wrote itself on an earlier pass: without this escape a
+                // mismatch from an older matching rule would be pinned forever, immune to any later
+                // fix, since the id lookup runs before the number lookup.
+                if (pinned != null && !HasAired(pinned))
+                {
+                    pinned = null;
+                }
+
                 if (pinned != null)
                 {
                     matchedBy = "episode id";
@@ -291,13 +310,34 @@ namespace Emby.Plugins.Bangumi.Providers
 
                 default:
                     var byEpisodeNumber = episodes.FirstOrDefault(byEp);
+                    var bySortNumber = episodes.FirstOrDefault(bySort);
+
+                    // Both readings can resolve at once, to different episodes, and that is not an
+                    // exotic case: it happens on every sequel subject whose sort range starts at or
+                    // below its own episode count. 正反対な君と僕 第2期 numbers ep 1..13 as sort 13..25,
+                    // so a file called S02E13 is simultaneously "ep 13" (the finale) and "sort 13"
+                    // (the premiere). Preferring ep unconditionally, as the plain fallback order does,
+                    // stamps the finale onto the first file of the season. A file cannot contain an
+                    // episode that has not aired yet, so an unaired candidate loses the tie; when the
+                    // air dates do not separate them, ep keeps its original priority.
+                    if (byEpisodeNumber != null && bySortNumber != null &&
+                        byEpisodeNumber.Id != bySortNumber.Id)
+                    {
+                        var epAired = HasAired(byEpisodeNumber);
+                        var sortAired = HasAired(bySortNumber);
+                        if (epAired != sortAired)
+                        {
+                            matchedBy = epAired ? "ep (unaired sort rejected)" : "sort (unaired ep rejected)";
+                            return epAired ? byEpisodeNumber : bySortNumber;
+                        }
+                    }
+
                     if (byEpisodeNumber != null)
                     {
                         matchedBy = "ep";
                         return byEpisodeNumber;
                     }
 
-                    var bySortNumber = episodes.FirstOrDefault(bySort);
                     if (bySortNumber != null)
                     {
                         matchedBy = "sort";
@@ -320,6 +360,25 @@ namespace Emby.Plugins.Bangumi.Providers
         private static string Join(List<int> ids)
         {
             return string.Join("/", ids.Select(i => i.ToString(CultureInfo.InvariantCulture)).ToArray());
+        }
+
+        /// <summary>
+        /// Whether the episode is already broadcast. An unparsable or absent air date counts as aired,
+        /// so a subject with no dates at all behaves exactly as it did before this check existed.
+        /// </summary>
+        private static bool HasAired(BangumiEpisode episode)
+        {
+            if (episode == null) return false;
+            if (string.IsNullOrWhiteSpace(episode.Airdate)) return true;
+
+            DateTime parsed;
+            if (!DateTime.TryParseExact(episode.Airdate.Trim(), "yyyy-MM-dd",
+                    CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed))
+            {
+                return true;
+            }
+
+            return parsed.Date <= DateTime.UtcNow.Date.AddDays(1);
         }
 
         /// <summary>ep and sort are floating point (7.5 for a mid season special).</summary>

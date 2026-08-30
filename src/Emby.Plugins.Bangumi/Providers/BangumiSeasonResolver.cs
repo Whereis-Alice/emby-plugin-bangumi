@@ -76,6 +76,9 @@ namespace Emby.Plugins.Bangumi.Providers
     {
         public const string SequelRelation = "续集";
 
+        /// <summary>Inverse of <see cref="SequelRelation"/>, used to find an earlier cour of the same season.</summary>
+        public const string PrequelRelation = "前传";
+
         /// <summary>Hard stop for chain walking. No anime franchise on Bangumi is deeper than this.</summary>
         private const int MaxChainDepth = 16;
 
@@ -189,7 +192,71 @@ namespace Emby.Plugins.Bangumi.Providers
         {
             var chain = await BuildChainAsync(api, startId, cancellationToken).ConfigureAwait(false);
             if (chain.Count == 0) return new List<int> { startId };
-            return Collect(chain, 0, "episode candidates").SubjectIds;
+
+            var collected = Collect(chain, 0, "episode candidates").SubjectIds;
+
+            // A season is frequently identified through its *second* cour, because that is the subject
+            // whose title matches the folder: Re:Zero season 4 is 喪失編 (547888) + 奪還編 (633836) and
+            // the folder is named after 奪還編. BuildChainAsync only walks 续集, so the earlier cour
+            // stays invisible and every episode that belongs to it fails to match. Walking 前传 first
+            // and prepending is what makes the offset arithmetic in the episode provider line up.
+            var earlier = await BuildPrecedingCoursAsync(api, chain[0], cancellationToken).ConfigureAwait(false);
+            if (earlier.Count == 0) return collected;
+
+            var ids = new List<int>(earlier);
+            foreach (var id in collected)
+            {
+                if (!ids.Contains(id)) ids.Add(id);
+            }
+
+            if (ids.Count > MaxSubjectsPerSeason) ids = ids.GetRange(0, MaxSubjectsPerSeason);
+            return ids;
+        }
+
+        /// <summary>
+        /// Earlier cours of the same season as <paramref name="start"/>, oldest first. Only subjects
+        /// that agree about the season number, or that carry an explicit split cour hint, are accepted:
+        /// a genuine previous season restarts its episode numbering and would shift every offset lookup.
+        /// </summary>
+        private static async Task<List<int>> BuildPrecedingCoursAsync(
+            BangumiApiClient api, SubjectChainEntry start, CancellationToken cancellationToken)
+        {
+            var earlier = new List<int>();
+            if (api == null || start == null || start.Id <= 0) return earlier;
+
+            var visited = new HashSet<int>();
+            visited.Add(start.Id);
+
+            var current = start;
+            for (var depth = 1; depth < MaxSubjectsPerSeason; depth++)
+            {
+                var related = await api.GetRelatedSubjectsAsync(current.Id, cancellationToken).ConfigureAwait(false);
+                if (related == null) break;
+
+                // Newest first: when several prequels are listed, the immediately preceding cour is
+                // the one registered last.
+                var previous = related
+                    .Where(r => r != null && r.Id > 0 &&
+                                r.Type == BangumiConstants.SubjectType.Anime &&
+                                string.Equals(r.Relation, PrequelRelation, StringComparison.Ordinal) &&
+                                !visited.Contains(r.Id))
+                    .OrderByDescending(r => r.Id)
+                    .FirstOrDefault();
+
+                if (previous == null) break;
+
+                var entry = Entry(previous.Id, previous.Name, previous.NameCn);
+
+                // Checked both ways round so that an unmarked "後半" subject can still recognise the
+                // marked first cour as its own season.
+                if (!IsSameSeason(entry, current.SeasonMarker) && !IsSameSeason(current, entry.SeasonMarker)) break;
+
+                visited.Add(entry.Id);
+                earlier.Insert(0, entry.Id);
+                current = entry;
+            }
+
+            return earlier;
         }
 
         private static SeasonResolution Collect(List<SubjectChainEntry> chain, int index, string matchedBy)
