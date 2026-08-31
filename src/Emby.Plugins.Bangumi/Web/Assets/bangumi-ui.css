@@ -1,0 +1,489 @@
+/*
+ * bangumi-ui.css - Emby.Plugins.Bangumi 条目页扩展栏位样式
+ *
+ * 设计约束:
+ *  1. 尺寸一律使用 em / rem, 随主题字号缩放, 不与 Emby-Fluent 等主题的布局打架。
+ *  2. 不硬编码前景色: 文字统一 color: inherit + opacity, 背景统一半透明叠加,
+ *     因此深色/浅色主题下都可读。
+ *  3. 只作用于自有 bgmui-* / bangumiUi* class, 不覆写任何 Emby 原生 class。
+ */
+
+.bangumiUiSections {
+    display: block;
+}
+
+.bangumiUiSections .bgmui-section {
+    margin-bottom: 1.6em;
+}
+
+.bangumiUiNativeHidden {
+    display: none !important;
+}
+
+/* ---------------------------------------------------------------- 标题 */
+
+.bgmui-title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5em;
+}
+
+.bgmui-count {
+    font-size: 0.72em;
+    font-weight: 400;
+    opacity: 0.55;
+}
+
+/* ---------------------------------------------------------------- 卡片行 */
+
+.bgmui-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 0.8em;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-top: 0.2em;
+    padding-bottom: 0.6em;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+}
+
+.bgmui-row::-webkit-scrollbar {
+    height: 0.5em;
+}
+
+.bgmui-row::-webkit-scrollbar-thumb {
+    background: rgba(127, 127, 127, 0.45);
+    border-radius: 0.25em;
+}
+
+.bgmui-row::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/* ---------------------------------------------------------------- 卡片 */
+
+.bgmui-card {
+    /* button 复位 */
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: center;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+
+    flex: 0 0 auto;
+    width: 7.6em;
+    display: block;
+    border-radius: 0.4em;
+    transition: transform 120ms ease-out;
+}
+
+.bgmui-card:hover {
+    transform: translateY(-0.15em);
+}
+
+.bgmui-card:focus {
+    outline: none;
+}
+
+.bgmui-card:focus-visible {
+    outline: 0.14em solid currentColor;
+    outline-offset: 0.18em;
+}
+
+.bgmui-poster {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    border-radius: 0.35em;
+    background-color: rgba(127, 127, 127, 0.18);
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-size: cover;
+    overflow: hidden;
+}
+
+/* 无图 / 加载失败时的占位斜纹, 避免出现破图 */
+.bgmui-posterEmpty {
+    background-image: repeating-linear-gradient(
+        135deg,
+        rgba(127, 127, 127, 0.10) 0,
+        rgba(127, 127, 127, 0.10) 0.5em,
+        rgba(127, 127, 127, 0.20) 0.5em,
+        rgba(127, 127, 127, 0.20) 1em);
+}
+
+.bgmui-name {
+    margin-top: 0.4em;
+    font-size: 0.86em;
+    line-height: 1.25;
+    word-break: break-word;
+}
+
+/*
+ * 副行(角色卡的 CV / 声优卡的所配角色)长度差异极大: 一个声优可能配 8 个角色,
+ * 不截断会让同一行卡片高度参差不齐。最多 3 行, 完整文本由 title + aria-label 承载。
+ */
+.bgmui-sub {
+    margin-top: 0.15em;
+    font-size: 0.76em;
+    line-height: 1.25;
+    opacity: 0.6;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    max-height: 3.75em;
+    overflow: hidden;
+}
+
+/* 名称同样限高两行, 否则超长中日文名会顶开卡片 */
+.bgmui-name {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    max-height: 2.5em;
+    overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- 制作人员 */
+
+/*
+ * staff 用文本两列表而不是卡片: 单部番动辄近百名 staff, 且大多没有头像,
+ * 卡片会撑出十几屏空白格。两列表在一屏内可读, 也便于按职位扫读。
+ */
+.bgmui-staff {
+    display: block;
+    padding-top: 0.2em;
+    padding-bottom: 0.4em;
+}
+
+.bgmui-staffRow {
+    display: flex;
+    align-items: baseline;
+    gap: 0.8em;
+    padding: 0.32em 0;
+    font-size: 0.92em;
+    line-height: 1.45;
+    border-bottom: 0.06em solid rgba(127, 127, 127, 0.16);
+}
+
+.bgmui-staffRow:last-child {
+    border-bottom: 0;
+}
+
+.bgmui-staffPos {
+    flex: 0 0 auto;
+    width: 9em;
+    opacity: 0.6;
+    word-break: break-word;
+}
+
+.bgmui-staffNames {
+    flex: 1 1 auto;
+    min-width: 0;
+    word-break: break-word;
+}
+
+.bgmui-nameButton {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    border-radius: 0.2em;
+}
+
+.bgmui-nameButton:hover {
+    text-decoration: underline;
+}
+
+.bgmui-nameButton:focus {
+    outline: none;
+}
+
+.bgmui-nameButton:focus-visible {
+    outline: 0.12em solid currentColor;
+    outline-offset: 0.12em;
+}
+
+.bgmui-sep {
+    opacity: 0.4;
+}
+
+.bgmui-eps {
+    margin-left: 0.2em;
+    font-size: 0.82em;
+    opacity: 0.5;
+}
+
+/* ---------------------------------------------------------------- 概览 / 标签 */
+
+.bgmui-metaSection {
+    margin-bottom: 1.1em;
+}
+
+.bgmui-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35em 0.9em;
+    font-size: 0.9em;
+}
+
+.bgmui-metaItem {
+    opacity: 0.7;
+}
+
+.bgmui-link {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 0.08em solid rgba(127, 127, 127, 0.55);
+    padding-bottom: 0.05em;
+}
+
+.bgmui-link:hover {
+    border-bottom-color: currentColor;
+}
+
+.bgmui-link:focus-visible {
+    outline: 0.12em solid currentColor;
+    outline-offset: 0.15em;
+}
+
+.bgmui-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    margin-top: 0.7em;
+}
+
+.bgmui-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32em;
+    padding: 0.2em 0.6em;
+    border-radius: 1em;
+    background: rgba(127, 127, 127, 0.18);
+    font-size: 0.8em;
+    line-height: 1.5;
+}
+
+.bgmui-tagCount {
+    opacity: 0.55;
+    font-size: 0.9em;
+}
+
+/* ---------------------------------------------------------------- 弹窗 */
+
+.bgmui-backdrop {
+    position: fixed;
+    inset: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 100000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.2em;
+    background: rgba(0, 0, 0, 0.62);
+    -webkit-backdrop-filter: blur(0.15em);
+    backdrop-filter: blur(0.15em);
+}
+
+.bgmui-modal {
+    position: relative;
+    width: 100%;
+    max-width: 40em;
+    max-height: 86vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    border-radius: 0.6em;
+    /* 用不透明底色保证正文可读, 同时 color 仍然继承主题前景色 */
+    background: #22252b;
+    color: #f2f3f5;
+    box-shadow: 0 1.2em 3em rgba(0, 0, 0, 0.55);
+}
+
+.bgmui-close {
+    position: absolute;
+    top: 0.35em;
+    right: 0.45em;
+    z-index: 1;
+    margin: 0;
+    padding: 0;
+    width: 1.9em;
+    height: 1.9em;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(127, 127, 127, 0.22);
+    color: inherit;
+    font: inherit;
+    font-size: 1.2em;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.bgmui-close:hover {
+    background: rgba(127, 127, 127, 0.38);
+}
+
+.bgmui-close:focus-visible {
+    outline: 0.12em solid currentColor;
+    outline-offset: 0.12em;
+}
+
+.bgmui-modalBody {
+    overflow-y: auto;
+    padding: 1.5em 1.6em 1.6em;
+    font-size: 0.95em;
+    line-height: 1.6;
+}
+
+.bgmui-loading {
+    padding: 1.5em 0;
+    text-align: center;
+    opacity: 0.65;
+}
+
+.bgmui-entityHeader {
+    display: flex;
+    align-items: flex-start;
+    gap: 1em;
+}
+
+.bgmui-entityPoster {
+    flex: 0 0 auto;
+    width: 8em;
+    aspect-ratio: 2 / 3;
+    border-radius: 0.35em;
+    background-color: rgba(127, 127, 127, 0.18);
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-size: cover;
+}
+
+.bgmui-entityTitles {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.bgmui-entityName {
+    margin: 0;
+    font-size: 1.25em;
+    line-height: 1.3;
+    word-break: break-word;
+}
+
+.bgmui-entityAlt {
+    margin-top: 0.2em;
+    font-size: 0.9em;
+    opacity: 0.6;
+    word-break: break-word;
+}
+
+.bgmui-entityFacts {
+    margin-top: 0.55em;
+    font-size: 0.88em;
+    opacity: 0.75;
+}
+
+.bgmui-entityTitles .bgmui-link {
+    display: inline-block;
+    margin-top: 0.7em;
+    font-size: 0.85em;
+}
+
+.bgmui-entitySummary {
+    margin: 1.1em 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.bgmui-entityRow {
+    display: flex;
+    align-items: baseline;
+    gap: 0.8em;
+    padding: 0.32em 0;
+    border-bottom: 0.06em solid rgba(127, 127, 127, 0.16);
+}
+
+.bgmui-entityRow:first-of-type {
+    margin-top: 1.1em;
+    border-top: 0.06em solid rgba(127, 127, 127, 0.16);
+}
+
+.bgmui-entityRow:last-child {
+    border-bottom: 0;
+}
+
+.bgmui-entityKey {
+    flex: 0 0 auto;
+    width: 7em;
+    opacity: 0.55;
+    font-size: 0.9em;
+    word-break: break-word;
+}
+
+.bgmui-entityValue {
+    flex: 1 1 auto;
+    min-width: 0;
+    word-break: break-word;
+}
+
+/* ---------------------------------------------------------------- 窄屏 */
+
+@media all and (max-width: 40em) {
+    .bgmui-card {
+        width: 6em;
+    }
+
+    .bgmui-staffRow {
+        display: block;
+    }
+
+    .bgmui-staffPos {
+        width: auto;
+        font-size: 0.86em;
+    }
+
+    .bgmui-modalBody {
+        padding: 1.4em 1.1em 1.2em;
+    }
+
+    .bgmui-entityHeader {
+        display: block;
+    }
+
+    .bgmui-entityPoster {
+        width: 6.5em;
+        margin-bottom: 0.8em;
+    }
+
+    .bgmui-entityKey {
+        width: 5.5em;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bgmui-card,
+    .bgmui-card:hover {
+        transform: none;
+        transition: none;
+    }
+}

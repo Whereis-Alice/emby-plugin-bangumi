@@ -98,6 +98,12 @@ TMDB 和 TheTVDB 把一部番的所有季塞进同一个条目的 `Season 1..N`�
 - **中文优先**：`name_cn` 作标题、原文名写入「原始标题」，可反转。
 - 内置**自我限速 + 指数退避 + TTL 缓存**，一次全库扫描不会打爆 Bangumi 配额。
 - **代理支持**，因为 `api.bgm.tv` 在不少网络环境下不可直连。
+- **条目页面独立角色栏（Bangumi UI）**：Emby 原生「演职人员」把角色和 staff 混在同一行卡片里，
+  DOM 完全同构，靠 CSS 或换主题分不开。插件自带一套前端：**角色**（按主角 / 配角 / 客串分栏）、
+  **声优**（副行是其所配角色）、**制作人员**（按职位分组的两列表）、**关联条目**、评分与标签
+  各占独立栏位，点角色 / 声优弹出详情（头像、中日文名、简介、别名、infobox）。
+  数据直接来自 Bangumi，不写进 Emby 媒体库，所以 150 个角色也不会污染演员表。见
+  「[条目页面（Bangumi UI）](#条目页面bangumi-ui)」。
 
 ## 安装
 
@@ -197,6 +203,8 @@ dotnet build src/Emby.Plugins.Bangumi/Emby.Plugins.Bangumi.csproj -c Release \
 | 刮削器优先级 | 0 | 设 `-1` 可排在 TheTVDB / TMDb 之前 |
 | 详细日志 | 关 | 排查匹配错误时打开，会记录每次请求、标题清洗结果和候选打分 |
 
+「条目页面（Bangumi UI）」那一段的选项见下文同名章节。
+
 ## 计划任务
 
 ### Bangumi：补全人物元数据
@@ -227,6 +235,94 @@ Emby 的人物是**懒加载**的：条目刮完之后，每个声优 / 制作�
 没有头像的人默认**不会**被反复重试：实测 615 个 Bangumi 人物里有 223 个在 Bangumi 上
 就是没有照片（`images` 全空），每晚为他们重发几百个请求毫无意义。确实怀疑是下载失败时，
 打开「重试没有头像的人物」再跑一次。
+
+## 条目页面（Bangumi UI）
+
+Emby 原生条目页只有一个「演职人员」区块：`item.js` 直接拿 `currentItem.People` 交给
+`cardbuilder.js`，吐出来的人物卡 DOM **完全同构**——没有 `data-type`、没有 `data-role`、
+没有职位信息，声优和作画监督在 HTML 上长得一模一样。所以「角色单独一栏、staff 按职位分组」
+这件事，纯 CSS 做不到，换主题也做不到，必须有人重新生成 DOM。
+
+插件的做法是**自开 REST 端点 + 前端注入**：
+
+1. 插件把 Bangumi 的条目 / 角色 / 人员 / 关联条目聚合成一个 JSON 端点；
+2. 前端 JS 与 CSS 作为**嵌入资源**打进同一个 `Emby.Plugins.Bangumi.dll`，由插件自己以静态资源提供；
+3. `index.html` 里加**一行** `<script>`，脚本在条目页把栏位插到原生「演职人员」之前。
+
+角色数据**不写进 Emby 媒体库**——150 个角色只存在于这个页面，不会挤爆演员表、不会生成
+上百个 `Person` 行、也不影响「补全人物元数据」任务的规模。
+
+### 启用（一行注入）
+
+```powershell
+# 注入（幂等，自动备份 index.html）
+.\scripts\inject-ui.ps1 -DashboardDir 'E:\Emby-Server\system\dashboard-ui'
+
+# 回滚
+.\scripts\inject-ui.ps1 -DashboardDir 'E:\Emby-Server\system\dashboard-ui' -Remove
+```
+
+脚本在 `</head>` 前插入：
+
+```html
+<script src="/emby/Bangumi/Ui/bangumi-ui.js" data-bangumi-ui-inject="1"></script>
+```
+
+`data-bangumi-ui-inject="1"` 是幂等标记，重复运行不会插第二行。注入前会把原文件备份成
+`index.html.bak-<时间戳>`（`-NoBackup` 可关）。`</head>` 不唯一时脚本直接报错退出，不会瞎改。
+
+⚠️ **Emby 升级会覆盖 `dashboard-ui`，升级后需要重跑一次注入。** 插件 DLL 本身不受影响，
+升级后页面少一块就是这个原因。
+
+### 端点
+
+| 端点 | 鉴权 | 说明 |
+|---|---|---|
+| `GET /Bangumi/Items/{Id}/Detail` | 需要 | 条目聚合数据。沿 `GetParent()` 最多 4 跳找 `ProviderIds["Bangumi"]`，所以分集 / 季度页也能解析到条目 |
+| `GET /Bangumi/Characters/{Id}` | 需要 | 角色详情（弹窗用）|
+| `GET /Bangumi/Persons/{Id}` | 需要 | 人物详情（弹窗用）|
+| `GET /Bangumi/Ui/bangumi-ui.js` | 匿名 | 嵌入资源 |
+| `GET /Bangumi/Ui/bangumi-ui.css` | 匿名 | 嵌入资源 |
+| `GET /Bangumi/Ui/Image?Url=` | 匿名 | 图片代理，只放行 Bangumi 图床 host；非白名单返回一个空 GIF 静默降级 |
+
+两个静态资源端点必须匿名：`<script src>` 与 CSS 请求不带 Emby token，走鉴权就是 401。
+注意 **Emby 4.9 下「不打 `[Authenticated]`」并不等于匿名**，必须显式打
+`MediaBrowser.Controller.Net.UnauthenticatedAttribute`，细节见 `docs/api-notes.md`。
+
+聚合端点结果按 `UI 缓存时长`（默认 720 分钟）在插件内存里缓存，键里含中文名预算，
+所以同一个条目第二次打开瞬间出结果；冷缓存下 150 个角色首次要几十秒（受 340 ms 自我限速约束）。
+
+### 选项
+
+| 选项 | 默认值 | 说明 |
+|---|---|---|
+| 启用条目页面增强 | 开 | 关掉后端点返回空载荷、前端静默退出，不必拆掉注入 |
+| 角色按关系分栏 | 开 | 主角 / 配角 / 客串各自一栏；关掉则合成一栏 |
+| 显示声优栏 | 开 | 副行是该声优在本作所配的角色 |
+| 显示制作人员栏 | 开 | 按职位分组的两列表（原作 / 导演 / 系列构成 / 脚本 / 分镜 / 演出 / 作画监督 / 原画…）|
+| 显示关联条目栏 | 开 | 前传 / 续集 / 总集篇 / 番外篇 / 片头曲…带海报 |
+| 显示评分 | 开 | 评分 / 排名 / 评分人数 / 平台 / 话数 / 开播日期 / 放送星期 |
+| 显示标签 | 开 | 带热度数字的标签 chips |
+| 隐藏原生演职人员 | **关** | 开启后用 CSS 隐藏 Emby 自己那一行。默认保留，两者可对照 |
+| 代理角色 / 人物图片 | 开 | 图片走插件代理，避免浏览器直连 Bangumi 图床（无代理环境下会全是破图）|
+| 中文名查询上限 | 40 | 条目角色接口只给日文名，逐个请求 `/v0/characters/{id}` 取中文名。0–200，调大更全但首次加载更慢 |
+| UI 缓存时长 | 720 分钟 | 聚合结果的内存缓存 TTL |
+
+### 实测（《排球少年!! 第二季》，条目 `120236`）
+
+```
+角色 150（主角 2 / 配角 148）  声优 119  制作人员 177（38 个职位分组）  关联条目 22  标签 24
+评分 8.2  排名 #110  7284 人评分  TV  25 话  2015-10-03 开播  星期六
+角色中文名命中 40/150（= 中文名查询上限）
+```
+
+### 已知限制
+
+- 依赖 `.peopleSection` 这个 class 定位插入点。Emby 前端改版会让它失效（页面只是少一块，
+  不会报错）。
+- Emby 会**覆写插件设置的 `Cache-Control`**，实际返回 `no-store`，所以图片代理的浏览器
+  缓存没生效，每次进页面都会重新走代理。功能无影响。
+- 卡片副行（角色的 CV、声优所配角色）超过 3 行会截断，完整内容在 `title` 与 `aria-label` 里。
 
 ## 工作原理
 
@@ -681,6 +777,12 @@ src/Emby.Plugins.Bangumi/
 │   └── BangumiPersonMetadataTask.cs  批量补全人物页的计划任务
 ├── Utils/
 │   └── TitleNormalizer.cs     文件名清洗与季度标记提取
+├── Web/                       条目页面增强（Bangumi UI）
+│   ├── BangumiUiService.cs    IService：聚合端点、静态资源、图片代理、内存缓存
+│   ├── BangumiUiModels.cs     前端契约 DTO
+│   └── Assets/
+│       ├── bangumi-ui.js      单 IIFE / ES5，只依赖 window.ApiClient
+│       └── bangumi-ui.css     尺寸全 em、颜色 inherit + 半透明叠加，跟随任意主题
 └── Providers/
     ├── BangumiProviderBase.cs      搜索、打分、字段映射的共享逻辑
     ├── BangumiSeriesProvider.cs
@@ -692,6 +794,11 @@ src/Emby.Plugins.Bangumi/
     ├── BangumiPersonProvider.cs     人物页元数据 + 头像
     └── BangumiExternalId.cs
 ```
+
+`Web/Assets/` 下的两个文件通过 `csproj` 的 `<EmbeddedResource>` 打进 DLL，改完必须**重新构建**
+才会生效（不是磁盘文件，改 `dashboard-ui` 下的东西没用）。前端刻意写成 ES5 单 IIFE、
+不引任何库、CSS 不写死颜色，这样在 emby-fluent 之类的第三方主题下也能跟着变。
+调试钩子：`window.BangumiUi.refresh()` / `.clearCache()`，`window.BangumiUiDebug = true` 开日志。
 
 插件不带任何 NuGet 运行时依赖：Emby 自包含的 .NET 8 运行时已经提供
 `System.Net.Http` 和 `System.Text.Json`，`csproj` 里 `CopyLocalLockFileAssemblies`

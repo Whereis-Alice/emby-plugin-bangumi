@@ -214,6 +214,57 @@ namespace Emby.Plugins.Bangumi
         [Description("Bangumi 上有相当一部分制作人员根本没有照片，默认不再为他们重复请求。打开后每次任务都会重试，适合怀疑头像下载失败时临时开启。")]
         public bool PersonTaskRetryMissingPortraits { get; set; } = false;
 
+        // ---------- 条目页面（Bangumi UI） ----------
+
+        [DisplayName("独立的角色 / 制作栏")]
+        [Description("Emby 自带的「演职人员」把角色、声优和制作人员挤在同一排卡片里，Person 模型也存不下「谁配了谁」——它的 PersonType 只有 8 种，没有「角色」，前端拿到的 People 每项更是只有 Name / Id / Role / Type / PrimaryImageTag，连 ProviderIds 都没有，纯 CSS 或换主题都分不开。打开此项后插件自己开一个接口 /emby/Bangumi/Items/{id}/Detail，把 Bangumi 原样的数据交给注入的脚本，另起「角色」「声优」「制作人员（按职位分组）」等栏位。需要先运行 scripts/inject-ui.ps1 往 dashboard-ui/index.html 里插一行引用。")]
+        public bool EnableBangumiUi { get; set; } = true;
+
+        [DisplayName("角色按主角 / 配角 / 客串分组")]
+        [Description("关闭则所有角色排成一行，按 Bangumi 顺序（仍然是主角在前）。")]
+        public bool UiGroupCharactersByRelation { get; set; } = true;
+
+        [DisplayName("显示声优栏")]
+        [Description("以声优为主的一排卡片，第二行列出他在本作里配的所有角色。关掉后声优只出现在角色卡片下方。")]
+        public bool UiShowVoiceActors { get; set; } = true;
+
+        [DisplayName("显示制作人员栏")]
+        [Description("按 Bangumi 的职位原文分组：原作 / 监督 / 系列构成 / 人物设定 / 作画监督 / 色彩设计 / 摄影监督 / 音响监督 / 动画制作 …… 不再被压缩成 Emby 的 8 种 PersonType。「职位黑名单」对这里同样生效。")]
+        public bool UiShowStaffGroups { get; set; } = true;
+
+        [DisplayName("显示关联条目栏")]
+        [Description("前传 / 续集 / 番外篇 / 剧场版 / 片头曲 …… 来自 /v0/subjects/{id}/subjects，点击跳转 bgm.tv。")]
+        public bool UiShowRelated { get; set; } = true;
+
+        [DisplayName("显示 Bangumi 评分")]
+        [Description("显示 Bangumi 的评分、排名和评分人数。Emby 自己的社区评分来自 TMDb，两者不冲突。")]
+        public bool UiShowRating { get; set; } = true;
+
+        [DisplayName("显示 Bangumi 标签")]
+        [Description("显示条目的热门标签及其票数。与写入 Emby 的 Genre / Tag 无关，只是展示。")]
+        public bool UiShowTags { get; set; } = true;
+
+        [DisplayName("隐藏自带的演职人员栏")]
+        [Description("插件的栏位渲染成功后，把 Emby 原来那一排藏起来，避免同样的人出现两遍。默认保留，因为原生那排点进去是 Emby 的人物页（有本地媒体库的其他作品），插件的卡片点开是 Bangumi 简介弹窗，两者用途不同。")]
+        public bool UiHideNativePeople { get; set; } = false;
+
+        [DisplayName("图片经服务端转发")]
+        [Description("角色 / 人物头像来自 lain.bgm.tv。浏览器通常没有配代理，而插件有，所以默认让服务端代取（/emby/Bangumi/Ui/Image，只允许 bgm.tv 域名，浏览器端缓存 7 天）。网络能直连 bgm.tv 时关掉可以省一次中转。")]
+        public bool UiProxyImages { get; set; } = true;
+
+        [DisplayName("角色中文名查询上限")]
+        [Description("/v0/subjects/{id}/characters 不返回中文名，每个角色的「简体中文名」都要单独请求一次 /v0/characters/{id}。按最小请求间隔 340 毫秒算，40 个角色约 14 秒——只在缓存过期后付一次。0 = 全部显示日文原名（最快）。")]
+        [MinValue(0)]
+        [MaxValue(200)]
+        public int UiCharacterNameLookups { get; set; } = 40;
+
+        [DisplayName("条目页面缓存时长(分钟)")]
+        [Description("一个条目的完整数据（条目 + 角色 + 中文名 + 制作人员 + 关联）最多要 43 次以上请求，缓存在内存里避免每次打开页面都重跑。改完 Bangumi 上的资料想立刻看到，可以在请求后面加 ?Refresh=true。")]
+        [MinValue(1)]
+        [MaxValue(10080)]
+        [IsAdvanced]
+        public int UiCacheMinutes { get; set; } = 720;
+
         // ---------- 网络 ----------
 
         [DisplayName("代理地址")]

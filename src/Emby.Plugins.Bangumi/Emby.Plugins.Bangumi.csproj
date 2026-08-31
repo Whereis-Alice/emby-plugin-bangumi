@@ -21,6 +21,16 @@
     <Description>Bangumi (bgm.tv) metadata provider for Emby Server</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!--
+      The injected front end ships inside the dll and is served by
+      Web/BangumiUiService.cs, so deploying the plugin is a single file copy.
+      Resource names come out as Emby.Plugins.Bangumi.Web.Assets.<file>.
+    -->
+    <EmbeddedResource Include="Web\Assets\bangumi-ui.js" />
+    <EmbeddedResource Include="Web\Assets\bangumi-ui.css" />
+  </ItemGroup>
+
   <!--
     Reference resolution, in priority order:
       1. -p:EmbySystemDir=<path>  (MSBuild property)

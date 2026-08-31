@@ -403,7 +403,80 @@ Bangumi 的关系标签，只会是 `主角` / `配角` / `客串` 三个值之�
 - 条目 / 分集 / 人员响应进内存 TTL 缓存（默认 30 分钟），因为 Emby 刮一个季度时
   会对同一条目反复发起相同请求。
 
-## 7. 为什么需要这个插件
+## 7. Emby 侧实测笔记（Bangumi UI 相关）
+
+这一节记的是 Emby 4.9.5.0 上实测出来的坑，与 Bangumi 无关，但做条目页面增强必踩。
+
+### 7.1 🔑 「不打 `[Authenticated]`」不等于匿名
+
+`<script src>` / CSS / `<img src>` 请求不会带 Emby token，所以静态资源端点必须匿名。
+直觉上「不加 `[Authenticated]` 就是匿名」，**实测仍然返回 401**。必须显式打上
+`MediaBrowser.Controller.Net.UnauthenticatedAttribute`（无参标记特性）：
+
+```csharp
+using MediaBrowser.Controller.Net;
+
+[Route("/Bangumi/Ui/{Name}", "GET")]
+[Unauthenticated]                     // 少了这行 → 401
+public class GetBangumiUiAsset : IReturn<object>
+{
+    public string Name { get; set; }
+}
+```
+
+加上之后匿名请求返回 200。反之聚合数据端点应当保留 `[Authenticated]`——它带的是
+媒体库信息，而且前端是通过 `ApiClient` 发的请求，token 天然会带上。
+
+### 7.2 🔑 Emby 会把非 `index.html` 静态页里的 `<script>` 注释掉
+
+把测试页放进 `dashboard-ui\` 目录下会发现脚本根本不执行。实测一个 312 B 的 HTML
+响应变成 326 B，每个 `<script>` 标签正好 +7 B——Emby 用 `<!--` `-->` 把它们包起来了。
+`index.html` 本身不受影响（那是它自己要串脚本的入口），所以：
+
+- 注入点只能是 `index.html`；实测 Emby 吐给浏览器的 `index.html` 里注入的那一行完好无损。
+- 需要独立测试页时，**别放在 `dashboard-ui` 下**，另起一个静态服务器，靠 CORS 访问
+  `http://localhost:8096/emby/...`（Emby 的 `Access-Control-Allow-Origin` 是 `*`），
+  用 `?api_key=` 传 token。
+
+⚠️ 顺带一条安全提醒：`dashboard-ui` 目录是**匿名可访问**的，任何写着 token 的文件放进去
+等于公开泄露。测试文件用完立刻删。
+
+### 7.3 Emby 覆写插件设置的 `Cache-Control`
+
+`IHttpResultFactory.GetResult(...)` 传进去的 `Cache-Control: public, max-age=604800`
+不会出现在响应里，实际返回的是 `no-store, no-cache, must-revalidate`。图片代理因此
+拿不到浏览器缓存，每次进条目页都会重新走一遍代理。没找到从插件侧覆盖的办法，
+影响仅是多几十个本地请求，未处理。
+
+### 7.4 原生人物卡 DOM 完全同构，纯 CSS 分不开
+
+`dashboard-ui\item\item.html` 里只有一个 `.peopleSection`：
+
+```
+div.verticalSection.verticalSection-cards.peopleSection.hide
+  > h2.sectionTitle…
+  + div[is=emby-scroller] > div[is=emby-itemscontainer].scrollSlider…peopleItemsContainer
+```
+
+`item/item.js` 直接切 `instance.currentItem.People` 填充，**不请求服务端**；
+`cardbuilder.js` 生成的卡片上没有 `data-type` / `data-role` / `data-personrole`，
+声优和作画监督的 DOM 一模一样。结论：**「角色单独一栏」靠 CSS 或换主题做不到**，
+必须自己拿数据重新生成 DOM——这就是插件走「自开端点 + 前端注入」这条路的原因。
+
+### 7.5 SDK 速查（4.9.5.0 实测可用）
+
+| 需求 | 类型 / 方法 |
+|---|---|
+| 服务契约 | `MediaBrowser.Model.Services`：`IService` / `IReturn<T>` / `RouteAttribute` / `IRequest` / `IRequiresRequest` |
+| 鉴权特性 | `MediaBrowser.Controller.Net`：`AuthenticatedAttribute` / `UnauthenticatedAttribute` |
+| 返回字节 | `IHttpResultFactory.GetResult(IRequest, ReadOnlyMemory<byte>, string contentType, IDictionary<string, string>)` |
+| 取条目 | `ILibraryManager.GetItemById(Int64)` |
+| 条目上溯 | `BaseItem.GetParent()`；`BaseItem` 没有 `GetProviderId`，直接读 `ProviderIds` |
+
+嵌入资源名是 `<AssemblyName>.<目录路径用点连接>.<文件名>`，例如
+`Emby.Plugins.Bangumi.Web.Assets.bangumi-ui.js`。按后缀匹配比写死全名稳。
+
+## 8. 为什么需要这个插件
 
 TMDB / TheTVDB 把一部番的所有季合并成一个条目下的 `Season 1..N`，中文动画的
 后续季常年缺失或错位。Bangumi 每季独立建条目，条目粒度与「一次放送」对齐，
