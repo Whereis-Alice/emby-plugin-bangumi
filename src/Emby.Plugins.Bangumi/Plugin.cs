@@ -55,6 +55,9 @@ namespace Emby.Plugins.Bangumi
                 string.IsNullOrWhiteSpace(options.AccessToken) ? "<none>" : "<set>",
                 options.EpisodeNumberMode,
                 options.ProviderOrder);
+            // The injected line follows the option instead of the restart, so switching the
+            // item-page sections on or off takes effect on the next browser refresh.
+            Web.BangumiUiInjector.Apply(options, _logger);
             base.OnOptionsSaved(options);
         }
 

@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$IndexPath = "E:\Emby-Server\system\dashboard-ui\index.html",
+    [string]$IndexPath,
     [switch]$Remove,
     [switch]$NoBackup
 )
@@ -9,19 +9,51 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------------------------------------
 # inject-ui.ps1
 #
-# 往 Emby 的 dashboard-ui\index.html 注入一行 script 标签, 让浏览器加载插件
-# 内置的 Bangumi UI (bangumi-ui.js)。CSS 由 js 自己以 link 标签注入, 所以这里
-# 只需要一行。
+# 手动版的前端注入。插件本身已经会在每次服务器启动时做同样的事
+# (src/Emby.Plugins.Bangumi/Web/BangumiUiInjector.cs, 对应选项「自动注入前端脚本」),
+# 所以这个脚本只在两种情况下用得上:
 #
-#   .\inject-ui.ps1              注入 (幂等, 重复跑不会重复插入)
-#   .\inject-ui.ps1 -Remove      移除注入
+#   * 想立刻注入 / 撤掉, 不想为此重启服务器;
+#   * 关掉了自动注入, 打算自己管理 index.html。
 #
-# 注意: Emby 升级会覆盖 index.html, 升级后需要重新跑一次。
+#   .\inject-ui.ps1                     自动探测 index.html 并注入 (幂等)
+#   .\inject-ui.ps1 -IndexPath <path>   指定 index.html
+#   .\inject-ui.ps1 -Remove             撤掉注入
+#
+# 注入的路径是相对的 (../emby/...): index.html 由 <base>/web/ 提供,
+# 相对路径在反向代理挂了 base url 的部署下同样成立, 绝对路径只对根路径有效。
 # ---------------------------------------------------------------------------
 
-$marker = "bangumi-ui-inject"
-$tag = '<script src="/emby/Bangumi/Ui/bangumi-ui.js" data-bangumi-ui-inject="1"></' + 'script>'
+$marker = "data-bangumi-ui-inject"
+$tag = '<script src="../emby/Bangumi/Ui/bangumi-ui.js" data-bangumi-ui-inject="1"></script>'
 $anchor = "</head>"
+
+# 只吃掉注入的那一个 script 标签。按行删是不行的: 注入点是 </head> 之前,
+# 而主题 (例如 emby-fluent) 往往把自己的 script 标签写在同一行上。
+$pattern = '[ \t]*<script\b[^>]*\bdata-bangumi-ui-inject\b[^>]*>\s*</script>[ \t]*(\r?\n)?'
+
+if (-not $IndexPath) {
+    $candidates = @()
+    if ($env:EMBY_SYSTEM_DIR) { $candidates += (Join-Path $env:EMBY_SYSTEM_DIR "dashboard-ui\index.html") }
+    $candidates += @(
+        "C:\Program Files\Emby-Server\system\dashboard-ui\index.html",
+        "C:\Emby-Server\system\dashboard-ui\index.html",
+        "D:\Emby-Server\system\dashboard-ui\index.html",
+        "E:\Emby-Server\system\dashboard-ui\index.html",
+        "/system/dashboard-ui/index.html",
+        "/opt/emby-server/system/dashboard-ui/index.html"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { $IndexPath = $candidate; break }
+    }
+
+    if (-not $IndexPath) {
+        throw "找不到 dashboard-ui\index.html, 请用 -IndexPath 指定。试过: " + ($candidates -join " | ")
+    }
+
+    Write-Host "index    -> $IndexPath (自动探测)"
+}
 
 if (-not (Test-Path -LiteralPath $IndexPath)) {
     throw "index.html not found: $IndexPath"
@@ -33,13 +65,18 @@ $hasMarker = $raw.Contains($marker)
 function Backup-Index {
     param([string]$Path)
 
-    if ($NoBackup) { return $null }
+    if ($NoBackup) { return }
 
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $dest = "$Path.bak-$stamp"
+    $dest = "$Path.bangumi-bak-$stamp"
     Copy-Item -LiteralPath $Path -Destination $dest
-    Write-Host "backup  -> $dest"
-    return $dest
+    Write-Host "backup   -> $dest"
+}
+
+function Write-Index {
+    param([string]$Path, [string]$Content)
+
+    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 if ($Remove) {
@@ -48,44 +85,40 @@ if ($Remove) {
         exit 0
     }
 
-    Backup-Index -Path $IndexPath | Out-Null
-
-    $lines = $raw -split "(?<=\n)"
-    $kept = @()
-    $dropped = 0
-    foreach ($line in $lines) {
-        if ($line.Contains($marker)) {
-            $dropped++
-            continue
-        }
-        $kept += $line
+    $stripped = [regex]::Replace($raw, $pattern, "")
+    if ($stripped.Contains($marker)) {
+        throw "index.html 里的注入标签形状不认识, 没有改动: $IndexPath"
     }
 
-    [System.IO.File]::WriteAllText($IndexPath, ($kept -join ""), (New-Object System.Text.UTF8Encoding($false)))
-    Write-Host "removed $dropped line(s) from $IndexPath"
+    Backup-Index -Path $IndexPath
+    Write-Index -Path $IndexPath -Content $stripped
+    Write-Host "removed  -> $IndexPath ($($raw.Length - $stripped.Length) 字节)"
+    Write-Host ""
+    Write-Host "提醒: 插件下次启动会自动注入回来, 想彻底撤掉请先关掉选项「自动注入前端脚本」。"
     exit 0
 }
 
-if ($hasMarker) {
+if ($raw.Contains($tag)) {
     Write-Host "already injected, nothing to do"
     exit 0
 }
 
-$hits = ([regex]::Matches($raw, [regex]::Escape($anchor))).Count
+# 旧版本 (或别的形状) 的注入行先撤掉, 再插新的, 避免出现两行。
+$base = if ($hasMarker) { [regex]::Replace($raw, $pattern, "") } else { $raw }
+
+$hits = ([regex]::Matches($base, [regex]::Escape($anchor))).Count
 if ($hits -ne 1) {
     throw "expected exactly one $anchor in $IndexPath but found $hits"
 }
 
-Backup-Index -Path $IndexPath | Out-Null
+Backup-Index -Path $IndexPath
 
-$replacement = $tag + $anchor
-$patched = $raw.Replace($anchor, $replacement)
-
+$patched = $base.Replace($anchor, ($tag + $anchor))
 if ($patched -eq $raw) {
     throw "patch produced no change"
 }
 
-[System.IO.File]::WriteAllText($IndexPath, $patched, (New-Object System.Text.UTF8Encoding($false)))
+Write-Index -Path $IndexPath -Content $patched
 
 Write-Host "injected -> $IndexPath"
 Write-Host "tag      -> $tag"

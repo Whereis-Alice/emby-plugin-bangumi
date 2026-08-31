@@ -120,6 +120,11 @@ TMDB 和 TheTVDB 把一部番的所有季塞进同一个条目的 `Season 1..N`�
 4. 控制台 → 插件 → 「Bangumi 番组计划」，按需填写代理地址。
 5. 媒体库 → 编辑 → 「元数据下载器」里勾选 Bangumi，并调整顺序。
 
+就这五步，**不需要跑任何脚本、不需要改主题**。条目页面增强所需的那一行前端引用，由插件在
+第 3 步启动时自己幂等写进 `dashboard-ui/index.html`（写前备份、Emby 升级后自动补回、
+关掉选项即自动移除），细节见「[启用（自动注入）](#启用自动注入)」。首次打开条目页记得
+Ctrl+F5 刷新一次浏览器缓存。
+
 ### 从源码构建
 
 需要 .NET SDK 8.0。
@@ -267,32 +272,60 @@ Emby 原生条目页只有一个「演职人员」区块：`item.js` 直接拿 `
 
 1. 插件把 Bangumi 的条目 / 角色 / 人员 / 关联条目聚合成一个 JSON 端点；
 2. 前端 JS 与 CSS 作为**嵌入资源**打进同一个 `Emby.Plugins.Bangumi.dll`，由插件自己以静态资源提供；
-3. `index.html` 里加**一行** `<script>`，脚本在条目页把栏位插到原生「演职人员」之前。
+3. 插件启动时把**一行** `<script>` 幂等写进 `index.html`，脚本在条目页把栏位插到原生「演职人员」之前。
 
 角色数据**不写进 Emby 媒体库**——150 个角色只存在于这个页面，不会挤爆演员表、不会生成
 上百个 `Person` 行、也不影响「补全人物元数据」任务的规模。
 
-### 启用（一行注入）
+### 启用（自动注入）
 
-```powershell
-# 注入（幂等，自动备份 index.html）
-.\scripts\inject-ui.ps1 -DashboardDir 'E:\Emby-Server\system\dashboard-ui'
-
-# 回滚
-.\scripts\inject-ui.ps1 -DashboardDir 'E:\Emby-Server\system\dashboard-ui' -Remove
-```
-
-脚本在 `</head>` 前插入：
+**装完就能用，不需要手工改文件。** 插件启动时（以及每次在设置页保存后）会检查
+`dashboard-ui/index.html`，在第一个 `</head>` 前幂等写入：
 
 ```html
-<script src="/emby/Bangumi/Ui/bangumi-ui.js" data-bangumi-ui-inject="1"></script>
+<script src="../emby/Bangumi/Ui/bangumi-ui.js" data-bangumi-ui-inject="1"></script>
 ```
 
-`data-bangumi-ui-inject="1"` 是幂等标记，重复运行不会插第二行。注入前会把原文件备份成
-`index.html.bak-<时间戳>`（`-NoBackup` 可关）。`</head>` 不唯一时脚本直接报错退出，不会瞎改。
+`data-bangumi-ui-inject="1"` 是幂等标记：形状已经正确时插件一个字节都不动，不会插第二行。
+路径刻意用相对的 `../emby/...`——`index.html` 由 `<base>` 指到 `/web/`，所以反向代理挂在
+子路径（base url）下也能正确解析，写死 `/emby/...` 会在这种部署里 404。
 
-⚠️ **Emby 升级会覆盖 `dashboard-ui`，升级后需要重跑一次注入。** 插件 DLL 本身不受影响，
-升级后页面少一块就是这个原因。
+| 行为 | 说明 |
+|---|---|
+| 幂等 | 已是最新形状则跳过；发现旧形状（比如以前的绝对路径版本）先撤掉再插，不会残留两行 |
+| 自愈 | Emby 升级会覆盖 `dashboard-ui`，下次启动插件自动补回，不用记得重跑脚本 |
+| 可回滚 | 每次真正写入前先备份成 `index.html.bangumi-bak-<yyyyMMdd-HHmmss>`；**备份失败就放弃本次改动**；插件从不删除任何备份 |
+| 原子写 | 先写 `index.html.bangumi-tmp` 再整体替换，断电 / 崩溃不会留下半个文件；原文件的 UTF-8 BOM 与否原样保留 |
+| 可关闭 | 关掉「独立的角色 / 制作栏」→ 下次启动或保存设置时自动**移除**那一行；关掉「自动注入前端脚本」→ 插件完全不碰 `index.html` |
+| 不会拖垮宿主 | 整个流程包在 try/catch 里，失败只在日志留一条 warning，绝不影响 Emby 启动 |
+
+找 `index.html` 的顺序（命中第一个存在的就用）：
+
+1. 选项「dashboard-ui 目录」（填目录或直接填 `index.html` 都行）；
+2. `ProgramSystemPath\dashboard-ui\index.html` 及其父目录下的同名路径；
+3. `ApplicationResourcesPath` 下的同上两种；
+4. 程序集所在目录下的同上两种；
+5. `/system/dashboard-ui/index.html`、`/opt/emby-server/system/dashboard-ui/index.html`（Docker / Linux 包）。
+
+非标准部署没被探测到时，日志里会有一条 warning 列出试过的路径，把正确目录填进
+「dashboard-ui 目录」即可。
+
+仍然保留了手动脚本，用于排查或者刻意脱离插件管理：
+
+```powershell
+# 注入（不带参数时自动探测 index.html）
+.\scripts\inject-ui.ps1
+
+# 指定路径
+.\scripts\inject-ui.ps1 -IndexPath 'E:\Emby-Server\system\dashboard-ui\index.html'
+
+# 移除
+.\scripts\inject-ui.ps1 -Remove
+```
+
+`-Remove` 只删那一个 `<script>` 标签而不是删掉整行：注入点在 `</head>` 之前，emby-fluent 这类
+主题的 `<script>` 往往和它挤在同一行，按行删会把主题一起干掉。脚本移除后如果没关掉
+「自动注入前端脚本」，下次启动插件还会补回来。
 
 ### 端点
 
@@ -397,6 +430,8 @@ Info Bangumi: Bangumi UI prewarm: 「Smile 光之美少女」(subject 27332) 预
 | 夜间预热条目页面缓存 | 开 | 见「计划任务 → Bangumi：预热条目页面缓存」|
 | 夜间预热每次最多处理条目数 | 60 | 一个条目约 30 秒；0 = 不限制 |
 | 新增条目后立即预热 | 开 | 挂在媒体库事件上，新入库 / 重新识别的条目一分钟内建好，见「新增条目立即预热」|
+| 自动注入前端脚本 | 开 | 启动时把那一行 `<script>` 幂等写进 `dashboard-ui/index.html`（先备份、原子替换、升级自愈）。关掉后插件完全不碰该文件，需要自己跑 `scripts/inject-ui.ps1` |
+| dashboard-ui 目录 | 空 | 留空时自动探测；非标准部署（自定义安装路径、某些 Docker 镜像）填目录或直接填 `index.html` 的完整路径 |
 
 ### 实测（《排球少年!! 第二季》，条目 `120236`）
 
@@ -870,13 +905,15 @@ src/Emby.Plugins.Bangumi/
 ├── Tasks/
 │   ├── BangumiPersonMetadataTask.cs  批量补全人物页的计划任务
 │   ├── BangumiUiPrewarmTask.cs       夜间预热条目页面缓存的计划任务
-│   └── BangumiUiPrewarmEntryPoint.cs 媒体库事件 -> 新增条目立即预热
+│   ├── BangumiUiPrewarmEntryPoint.cs 媒体库事件 -> 新增条目立即预热
+│   └── BangumiUiInjectEntryPoint.cs  启动时注入 index.html
 ├── Utils/
 │   └── TitleNormalizer.cs     文件名清洗与季度标记提取
 ├── Web/                       条目页面增强（Bangumi UI）
 │   ├── BangumiUiService.cs    IService：聚合端点、静态资源、图片代理、预热入口
 │   ├── BangumiUiCache.cs      内存 + 磁盘两层缓存（subject-<id>.json）
 │   ├── BangumiUiModels.cs     前端契约 DTO
+│   ├── BangumiUiInjector.cs   index.html 幂等注入 / 自愈 / 备份 / 原子写
 │   └── Assets/
 │       ├── bangumi-ui.js      单 IIFE / ES5，只依赖 window.ApiClient
 │       └── bangumi-ui.css     尺寸全 em、颜色 inherit + 半透明叠加，跟随任意主题
