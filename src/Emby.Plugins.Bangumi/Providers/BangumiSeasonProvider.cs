@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Emby.Plugins.Bangumi.Api;
+using Emby.Plugins.Bangumi.Utils;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Logging;
@@ -60,6 +61,23 @@ namespace Emby.Plugins.Bangumi.Providers
             };
 
             if (info == null) return result;
+
+            string skipReason;
+            if (options.SkipNonSeasonFolders && IsNotASeasonFolder(info, options, out skipReason))
+            {
+                // Emby turns every subfolder of a series into a season, screenshots and font dumps
+                // included, and hands them a season number that collides with a real one. Writing
+                // the sequel subject onto "截图" would give it a full cast; refuse instead.
+                Logger.Warn(
+                    "Bangumi: skipping \"{0}\" (Emby calls it season {1} of \"{2}\") - {3}. Exclude the folder " +
+                    "in the library settings, or turn off 跳过不是季度的文件夹 if this really is a season.",
+                    FolderNameOf(info),
+                    info.IndexNumber.HasValue
+                        ? info.IndexNumber.Value.ToString(CultureInfo.InvariantCulture)
+                        : "?",
+                    info.SeriesName, skipReason);
+                return result;
+            }
 
             BangumiSubject subject = null;
             var byId = false;
@@ -143,6 +161,45 @@ namespace Emby.Plugins.Bangumi.Providers
 
             result.HasMetadata = true;
             return result;
+        }
+
+        /// <summary>
+        /// Folder name as seen on disk. <c>info.Name</c> already carries Emby's own guess
+        /// ("第 2 季"), so the path leaf is the only faithful source.
+        /// </summary>
+        private static string FolderNameOf(SeasonInfo info)
+        {
+            if (info == null) return string.Empty;
+            if (!string.IsNullOrWhiteSpace(info.Path))
+            {
+                var leaf = System.IO.Path.GetFileName(info.Path.TrimEnd(System.IO.Path.DirectorySeparatorChar,
+                    System.IO.Path.AltDirectorySeparatorChar));
+                if (!string.IsNullOrWhiteSpace(leaf)) return leaf;
+            }
+            return info.Name ?? string.Empty;
+        }
+
+        /// <summary>Extras folder or raw download folder, i.e. not a season at all.</summary>
+        private static bool IsNotASeasonFolder(SeasonInfo info, PluginOptions options, out string reason)
+        {
+            reason = null;
+
+            var folder = FolderNameOf(info);
+            if (string.IsNullOrWhiteSpace(folder)) return false;
+
+            if (TitleNormalizer.IsExtrasFolderName(folder, options.ExtraFolderNames))
+            {
+                reason = "the folder name says extras, not a season";
+                return true;
+            }
+
+            if (TitleNormalizer.LooksLikeReleaseFolderName(folder))
+            {
+                reason = "the folder name is a release name, so this is a download folder";
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>

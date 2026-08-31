@@ -377,6 +377,23 @@ person；头像刮削器先试 person 端点，空了再试 character 端点。
 Bangumi 的关系标签，只会是 `主角` / `配角` / `客串` 三个值之一。实测排球少年第二季按此判据
 数出 22 条，与 `/v0/subjects/120236/characters` 里 `actors` 为空的 type=1 角色数**完全一致**。
 
+### 5.11 人物头像的缺口在 Bangumi 那边，不是刮削失败
+
+库里 3476 个 `BangumiPerson` 只有 1719 个有头像（49.4%）。抽样验证过这不是插件漏下的：
+从 1845 个「有 Bangumi ID 但没头像」的人物里随机抽 60 个（固定种子）逐个打
+`GET /v0/persons/{id}`，**60 个全部**返回
+
+```json
+{ "images": { "large": "", "common": "", "medium": "", "small": "", "grid": "" } }
+```
+
+注意 `images` 本身**不是 `null`**，而是一个所有字段都为空字符串的对象——只判 `images != null`
+会以为有图。`BangumiImages.Best()` / `Thumbnail()` 用的是 `string.IsNullOrEmpty`，逐级回落到
+`grid` 后返回空串，`BangumiPersonImageProvider` 再据此不提供任何 `RemoteImageInfo`，行为正确。
+
+结论：没照片的绝大多数是动画制作人员（原画、制作进行、音响这类），Bangumi 上本来就没登记照片。
+`重试没有头像的人物` 默认关就是为此——开着只会每晚重复请求 1845 个必定为空的详情。
+
 ## 6. 限速与错误处理
 
 - 插件默认两次请求最小间隔 **340 ms**（`SemaphoreSlim` + 时间戳），一次媒体库

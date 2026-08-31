@@ -332,6 +332,123 @@ namespace Emby.Plugins.Bangumi.Utils
             return value;
         }
 
+        // Folder names are compared after everything that is not a letter, a digit or a CJK
+        // character is stripped, so "NCOP&NCED", "NCOP ED" and "ncop_nced" collapse onto one key.
+        private static readonly Regex FolderKeyNoise = new Regex(
+            @"[^0-9A-Za-z\u3041-\u30ff\u3400-\u9fff\uac00-\ud7af]+", RegexOptions.Compiled);
+
+        // Creditless opening / ending folders in every spelling seen in the wild.
+        private static readonly Regex CreditlessFolderKey = new Regex(
+            @"^(?:nc)?(?:op|ed|oped)(?:(?:nc)?(?:op|ed|oped))*\d*$", RegexOptions.Compiled);
+
+        // Folders that hold extras rather than a season. Deliberately excludes SP / Special /
+        // Specials / OVA / OAD / 剧场版, which are real content Emby maps onto season 0.
+        private static readonly HashSet<string> ExtrasFolderKeys = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "fonts", "font", "gif", "gifs", "scan", "scans",
+            "booklet", "booklets", "cd", "cds", "cddvd", "dvd",
+            "disc", "discs", "ost", "soundtrack", "soundtracks", "bgm",
+            "music", "musics", "song", "songs", "single", "singles",
+            "album", "albums", "themesong", "themesongs", "character", "charactersong",
+            "charactersongs", "dramacd", "dramacds", "audio", "audiocommentary", "commentary",
+            "menu", "menus", "bdmenu", "bdmenus", "logo", "logos",
+            "extra", "extras", "bonus", "bonuses", "feature", "features",
+            "pv", "pvs", "cm", "cms", "spot", "trailer",
+            "trailers", "preview", "previews", "teaser", "teasers", "making",
+            "makingof", "interview", "interviews", "comment", "comments", "event",
+            "events", "stage", "talk", "screenshot", "screenshots", "screencap",
+            "screencaps", "screens", "screen", "capture", "captures", "snapshot",
+            "snapshots", "thumb", "thumbs", "thumbnail", "thumbnails", "poster",
+            "posters", "wallpaper", "wallpapers", "artwork", "artworks", "cover",
+            "covers", "image", "images", "picture", "pictures", "pics",
+            "pic", "photo", "photos", "gallery", "galleries", "sub",
+            "subs", "subtitle", "subtitles", "ass", "srt", "sup",
+            "dance", "dancing", "misc", "other", "others", "temp",
+            "tmp", "trash", "截图", "截屏", "截图集", "屏摄",
+            "剧照", "舞蹈", "字体", "音乐", "音声", "原声",
+            "原声集", "原声大碟", "原声音乐", "设定集", "设定", "画集",
+            "扫图", "扫描", "壁纸", "海报", "封面", "图片",
+            "图", "相册", "插画", "特典", "特典映像", "映像特典",
+            "特典音乐", "花絮", "幕后", "制作特辑", "访谈", "采访",
+            "活动", "舞台", "杂志", "预告", "预告片", "宣传",
+            "宣传片", "广告", "菜单", "光盘菜单", "歌词", "字幕",
+            "外挂字幕", "内封字幕", "字幕包", "广播剧", "单曲", "专辑",
+            "主题曲", "片头曲", "片尾曲", "片头", "片尾", "无字",
+            "无字幕", "无修", "彩蛋", "其他", "其它", "临时",
+            "ノンクレジット", "ノンテロップ", "主題歌", "予告", "メニュー", "ブックレット",
+            "サントラ", "特典cd",
+        };
+
+        // Markers that only ever appear in a release name, never in a season name.
+        private static readonly Regex ReleaseFolderMarkers = new Regex(
+            @"2160p|1080[pi]|720p|480p|bd-?rip|blu-?ray|web-?rip|web-?dl|hdtv|tv-?rip|dvd-?rip|remux|" +
+            @"hevc|x26[45]|h\.?26[45]|10bit|8bit|flac|aac|opus|dts|truehd|" +
+            @"简日双语|繁日双语|简繁|内封|外挂|全集|合集",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Collapses a folder name into a comparison key: half width, lower case, separators and
+        /// brackets removed.
+        /// </summary>
+        public static string FolderKey(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return string.Empty;
+            var key = FolderKeyNoise.Replace(ToHalfWidth(name.Trim()), string.Empty);
+            return key.ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// True when the folder holds extras (screenshots, fonts, creditless OP / ED, soundtracks)
+        /// instead of a season. <paramref name="userNames"/> is the free form option value.
+        /// </summary>
+        public static bool IsExtrasFolderName(string name, string userNames)
+        {
+            var key = FolderKey(name);
+            if (key.Length == 0) return false;
+
+            if (ExtrasFolderKeys.Contains(key)) return true;
+            if (CreditlessFolderKey.IsMatch(key)) return true;
+
+            // "截图2" / "Fonts 3" are the same folder with a counter appended.
+            var trimmed = key.TrimEnd(CountedSuffix);
+            if (trimmed.Length > 0 && trimmed.Length != key.Length && ExtrasFolderKeys.Contains(trimmed)) return true;
+
+            if (string.IsNullOrWhiteSpace(userNames)) return false;
+
+            var parts = userNames.Split(UserListSeparators, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < parts.Length; i++)
+            {
+                var candidate = FolderKey(parts[i]);
+                if (candidate.Length > 0 && string.Equals(candidate, key, StringComparison.Ordinal)) return true;
+            }
+
+            return false;
+        }
+
+        private static readonly char[] CountedSuffix =
+            { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+
+        private static readonly char[] UserListSeparators =
+            { ',', ';', '|', '\n', '\r', '\uff0c', '\uff1b', '\u3001' };
+
+        /// <summary>
+        /// True when the whole folder name is a release blob - a download directory Emby mistook
+        /// for a season, e.g. "[FLsnow][Star-Detective_Precure][01][1080p]". A folder that carries
+        /// a release tag but still states its season number is left alone.
+        /// </summary>
+        public static bool LooksLikeReleaseFolderName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+
+            var text = ToHalfWidth(name.Trim());
+            if (text.IndexOf('[') < 0 && text.IndexOf('\u3010') < 0) return false;
+            if (!ReleaseFolderMarkers.IsMatch(text)) return false;
+
+            int? seasonNumber;
+            StripSeason(text, out seasonNumber);
+            return !seasonNumber.HasValue;
+        }
+
         /// <summary>Cleaning only, no season handling. Exposed for tests and logging.</summary>
         public static string Clean(string rawTitle)
         {

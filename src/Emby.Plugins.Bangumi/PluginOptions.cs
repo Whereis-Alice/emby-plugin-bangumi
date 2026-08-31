@@ -96,6 +96,14 @@ namespace Emby.Plugins.Bangumi
         [Description("当 Emby 的 Season N（N>1）自身没有 Bangumi ID 时，沿条目的「续集」关系向后走 N-1 步来定位该季的条目。关闭后所有季共用主条目。")]
         public bool AutoResolveSequelSeasons { get; set; } = true;
 
+        [DisplayName("跳过不是季度的文件夹")]
+        [Description("Emby 会把番剧目录下的 截图 / Fonts / GIF / NCOP&NCED / 舞蹈 / 特典 这类附属目录，以及整包下载目录（\"[组名][番名][01-48TV全集][1080P][BDRip]\"）也算成一季，编号还会撞上真实季号（截图 被判成第 2 季），于是继承到那一季的 Bangumi ID 并写进整套演员表。开启后这些目录不写入任何元数据，只在日志里点名。SP / Special / Specials / OVA / OAD / 剧场版 不受影响。已经写进去的旧数据不会自动清除，需要在媒体库设置里排除该目录、或删掉对应的季。")]
+        public bool SkipNonSeasonFolders { get; set; } = true;
+
+        [DisplayName("附属目录名追加")]
+        [Description("在内置的附属目录名单之外再追加，逗号 / 分号 / 竖线分隔，大小写、全半角、空格与下划线都不敏感（例：字幕包;蓝光菜单;声优访谈）。")]
+        public string ExtraFolderNames { get; set; } = string.Empty;
+
         [DisplayName("跨季连续集号回退")]
         [Description("发布组按全系列连续集号命名时（仙逆 147 集、名侦探柯南 1100 集），当前季条目里根本没有这个集号。开启后回退到沿「前传 / 续集」关系走完整条链，用 Bangumi 的 sort（全系列连续号）精确匹配。仅在常规匹配全部失败、且集号大于本季集数时才触发。")]
         public bool ResolveAbsoluteEpisodeNumbers { get; set; } = true;
