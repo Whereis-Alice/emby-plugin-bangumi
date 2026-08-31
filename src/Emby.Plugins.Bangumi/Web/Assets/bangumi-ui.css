@@ -97,15 +97,28 @@
     outline-offset: 0.18em;
 }
 
+/*
+ * Bangumi 的角色图多为全身立绘, 比 2:3 更瘦, cover + center 会同时裁掉头和脚。
+ * 顶部对齐后裁切只发生在下方, 头部始终保留(人物头像照片同样受益, 2:3 海报无影响)。
+ */
 .bgmui-poster {
     width: 100%;
     aspect-ratio: 2 / 3;
     border-radius: 0.35em;
     background-color: rgba(127, 127, 127, 0.18);
-    background-position: center center;
+    background-position: center top;
     background-repeat: no-repeat;
     background-size: cover;
     overflow: hidden;
+}
+
+/*
+ * 极瘦立绘(比 1:2 还窄)顶部对齐也会裁掉大半个身子, 改为完整放入并留白。
+ * 由 setPoster() 在图片实际尺寸已知后添加。
+ */
+.bgmui-posterFit {
+    background-size: contain;
+    background-position: center center;
 }
 
 /* 无图 / 加载失败时的占位斜纹, 避免出现破图 */

@@ -107,8 +107,6 @@ namespace Emby.Plugins.Bangumi.Web
             { 1, "A" }, { 2, "B" }, { 3, "AB" }, { 4, "O" }
         };
 
-        private static readonly ExpiringCache Cache = new ExpiringCache();
-
         private static readonly object AssetLock = new object();
         private static Dictionary<string, byte[]> _assets;
 
@@ -280,12 +278,12 @@ namespace Emby.Plugins.Bangumi.Web
                 ? Math.Max(0, Math.Min(200, request.NameBudget.Value))
                 : Math.Max(0, options.UiCharacterNameLookups);
 
-            var cacheKey = "detail:" + subjectId.ToString(CultureInfo.InvariantCulture) + ":"
-                           + nameBudget.ToString(CultureInfo.InvariantCulture);
-
+            // Cached per subject rather than per subject and budget: a payload built with a bigger
+            // budget answers a smaller request perfectly well, so the client first pass is served
+            // from the nightly prewarm instead of rebuilding a poorer copy of it.
             if (!request.Refresh)
             {
-                var hit = Cache.Get(cacheKey) as BangumiUiDetail;
+                var hit = BangumiUiCache.GetDetail(subjectId, nameBudget);
                 if (hit != null) return Rebind(hit, itemId, resolvedItemId, options);
             }
 
@@ -295,7 +293,7 @@ namespace Emby.Plugins.Bangumi.Web
                 {
                     var detail = await BuildDetailAsync(subjectId, options, nameBudget, cts.Token)
                         .ConfigureAwait(false);
-                    Cache.Set(cacheKey, detail, TimeSpan.FromMinutes(Math.Max(1, options.UiCacheMinutes)));
+                    BangumiUiCache.SetDetail(subjectId, detail, CacheTtl(options));
                     return Rebind(detail, itemId, resolvedItemId, options);
                 }
                 catch (Exception ex)
@@ -346,7 +344,7 @@ namespace Emby.Plugins.Bangumi.Web
         {
             if (!Plugin.CurrentOptions().EnableBangumiUi) return new BangumiUiEntity();
 
-            var hit = Cache.Get(cacheKey) as BangumiUiEntity;
+            var hit = BangumiUiCache.Get(cacheKey) as BangumiUiEntity;
             if (hit != null) return hit;
 
             using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
@@ -356,10 +354,8 @@ namespace Emby.Plugins.Bangumi.Web
                     var entity = await factory(cts.Token).ConfigureAwait(false);
                     if (entity == null) return new BangumiUiEntity();
 
-                    Cache.Set(
-                        cacheKey,
-                        entity,
-                        TimeSpan.FromMinutes(Math.Max(1, Plugin.CurrentOptions().UiCacheMinutes)));
+                    // Memory only: one wiki popup is one request, not worth a file each.
+                    BangumiUiCache.Set(cacheKey, entity, CacheTtl(Plugin.CurrentOptions()));
                     return entity;
                 }
                 catch (Exception ex)
@@ -410,6 +406,44 @@ namespace Emby.Plugins.Bangumi.Web
             return result;
         }
 
+        // ------------------------------------------------------------------ prewarm
+
+        private static TimeSpan CacheTtl(PluginOptions options)
+        {
+            return TimeSpan.FromMinutes(Math.Max(1, options.UiCacheMinutes));
+        }
+
+        /// <summary>
+        /// Builds one subject payload straight into the cache, skipping the item lookup and the
+        /// HTTP layer, for <see cref="Tasks.BangumiUiPrewarmTask"/>. Returns the payload, or the
+        /// cached one when it is still fresh.
+        ///
+        /// The cache lifetime doubles as the refresh interval: a nightly run rebuilds only what has
+        /// expired, so a library that was warmed yesterday costs nothing and one that was warmed
+        /// eight days ago is rebuilt.
+        /// </summary>
+        internal static async Task<BangumiUiDetail> PrewarmAsync(
+            int subjectId,
+            PluginOptions options,
+            ILogManager logManager,
+            CancellationToken cancellationToken)
+        {
+            var nameBudget = Math.Max(0, options.UiCharacterNameLookups);
+
+            var hit = BangumiUiCache.GetDetail(subjectId, nameBudget);
+            if (hit != null) return hit;
+
+            // The result factory is only touched by the asset and image routes, which this path
+            // never reaches, so the task does not have to resolve one.
+            var service = new BangumiUiService(logManager, null);
+
+            var detail = await service.BuildDetailAsync(subjectId, options, nameBudget, cancellationToken)
+                .ConfigureAwait(false);
+            BangumiUiCache.SetDetail(subjectId, detail, CacheTtl(options));
+
+            return detail;
+        }
+
         // ------------------------------------------------------------------ building
 
         private async Task<BangumiUiDetail> BuildDetailAsync(
@@ -434,6 +468,7 @@ namespace Emby.Plugins.Bangumi.Web
             var detail = new BangumiUiDetail
             {
                 SubjectId = subjectId,
+                NameBudget = Math.Max(0, nameBudget),
                 SubjectUrl = string.Format(
                     CultureInfo.InvariantCulture, BangumiConstants.SubjectUrlFormat, subjectId),
                 Layout = BuildLayout(options)
@@ -723,6 +758,7 @@ namespace Emby.Plugins.Bangumi.Web
                 VoiceActors = source.VoiceActors,
                 StaffGroups = source.StaffGroups,
                 Related = source.Related,
+                NameBudget = source.NameBudget,
                 Layout = BuildLayout(options)
             };
         }
@@ -836,58 +872,5 @@ namespace Emby.Plugins.Bangumi.Web
             return result;
         }
 
-        // ------------------------------------------------------------------ cache
-
-        /// <summary>
-        /// Like <see cref="TtlCache"/> but keeps the built object instead of a JSON string.
-        /// Assembling one detail payload costs up to 43 Bangumi requests at roughly three per
-        /// second, so this is the difference between an instant panel and a fifteen second wait.
-        /// </summary>
-        private sealed class ExpiringCache
-        {
-            private readonly ConcurrentDictionary<string, Entry> _entries =
-                new ConcurrentDictionary<string, Entry>(StringComparer.Ordinal);
-
-            private long _operations;
-
-            private sealed class Entry
-            {
-                public object Payload;
-                public DateTime ExpiresUtc;
-            }
-
-            public object Get(string key)
-            {
-                Entry entry;
-                if (!_entries.TryGetValue(key, out entry)) return null;
-
-                if (entry.ExpiresUtc <= DateTime.UtcNow)
-                {
-                    Entry removed;
-                    _entries.TryRemove(key, out removed);
-                    return null;
-                }
-
-                return entry.Payload;
-            }
-
-            public void Set(string key, object payload, TimeSpan ttl)
-            {
-                if (ttl <= TimeSpan.Zero || payload == null) return;
-
-                _entries[key] = new Entry { Payload = payload, ExpiresUtc = DateTime.UtcNow.Add(ttl) };
-
-                if (Interlocked.Increment(ref _operations) % 64 != 0) return;
-
-                var now = DateTime.UtcNow;
-                foreach (var pair in _entries.ToArray())
-                {
-                    if (pair.Value.ExpiresUtc > now) continue;
-
-                    Entry removed;
-                    _entries.TryRemove(pair.Key, out removed);
-                }
-            }
-        }
     }
 }

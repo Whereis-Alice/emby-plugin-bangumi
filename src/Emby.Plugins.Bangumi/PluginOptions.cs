@@ -259,11 +259,22 @@ namespace Emby.Plugins.Bangumi
         public int UiCharacterNameLookups { get; set; } = 40;
 
         [DisplayName("条目页面缓存时长(分钟)")]
-        [Description("一个条目的完整数据（条目 + 角色 + 中文名 + 制作人员 + 关联）最多要 43 次以上请求，缓存在内存里避免每次打开页面都重跑。改完 Bangumi 上的资料想立刻看到，可以在请求后面加 ?Refresh=true。")]
+        [Description("一个条目的完整数据（条目 + 角色 + 中文名 + 制作人员 + 关联）最多要 43 次以上请求，所以结果同时缓存在内存和磁盘（programdata\\data\\bangumi-ui-cache），重启服务器也不会丢。这个时长同时是刷新周期：夜间预热任务只重建已过期的条目。默认 10080 分钟 = 7 天。改完 Bangumi 上的资料想立刻看到，可以在请求后面加 ?Refresh=true。")]
         [MinValue(1)]
-        [MaxValue(10080)]
+        [MaxValue(43200)]
         [IsAdvanced]
-        public int UiCacheMinutes { get; set; } = 720;
+        public int UiCacheMinutes { get; set; } = 10080;
+
+        [DisplayName("夜间预热条目页面缓存")]
+        [Description("每晚枚举媒体库里带 Bangumi id 的剧集，把已过期或还没缓存过的条目提前建好，这样打开页面时角色和制作人员是立刻出现的。新加入的番剧会在下一次运行时自动纳入；没等到任务也只是第一次打开慢一点。")]
+        public bool UiPrewarmCache { get; set; } = true;
+
+        [DisplayName("夜间预热每次最多处理条目数")]
+        [Description("一个条目大约要 30 秒（受请求间隔限制），默认 60 个足够覆盖一般规模的库。设为 0 表示不限制。")]
+        [MinValue(0)]
+        [MaxValue(2000)]
+        [IsAdvanced]
+        public int UiPrewarmLimit { get; set; } = 60;
 
         // ---------- 网络 ----------
 

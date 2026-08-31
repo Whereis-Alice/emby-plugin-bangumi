@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using Emby.Plugins.Bangumi.Api;
 using MediaBrowser.Common;
 using MediaBrowser.Controller.Library;
@@ -13,6 +14,8 @@ namespace Emby.Plugins.Bangumi
         private readonly BangumiApiClient _api;
         private readonly IApplicationHost _applicationHost;
         private readonly object _libraryManagerLock = new object();
+        private readonly ConcurrentDictionary<Type, object> _services =
+            new ConcurrentDictionary<Type, object>();
         private ILibraryManager _libraryManager;
         private bool _libraryManagerResolved;
 
@@ -111,6 +114,36 @@ namespace Emby.Plugins.Bangumi
 
                 return instance._libraryManager;
             }
+        }
+
+        /// <summary>
+        /// Any other host service, resolved once and remembered, null when the host will not hand
+        /// it over. Same reasoning as <see cref="TryLibraryManager"/>: the code that needs an
+        /// <c>IJsonSerializer</c> or an <c>IApplicationPaths</c> is reached from a REST service and
+        /// from a scheduled task, neither of which can pass one down, and every caller degrades
+        /// gracefully when the answer is null.
+        /// </summary>
+        internal static T TryResolve<T>()
+            where T : class
+        {
+            var instance = Instance;
+            if (instance == null || instance._applicationHost == null) return null;
+
+            object cached;
+            if (instance._services.TryGetValue(typeof(T), out cached)) return cached as T;
+
+            T resolved = null;
+            try
+            {
+                resolved = instance._applicationHost.TryResolve<T>();
+            }
+            catch (Exception ex)
+            {
+                instance._logger.ErrorException("Bangumi could not resolve " + typeof(T).Name, ex);
+            }
+
+            instance._services[typeof(T)] = resolved;
+            return resolved;
         }
     }
 }

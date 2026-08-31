@@ -149,6 +149,13 @@ namespace Emby.Plugins.Bangumi.Web
 
         public List<BangumiUiRelated> Related { get; set; }
 
+        /// <summary>
+        /// Character name translation budget this payload was built with. The client uses it to
+        /// skip its second pass when the cache already answered with a fully translated payload,
+        /// and the cache uses it so that a cheap first pass never overwrites a complete one.
+        /// </summary>
+        public int NameBudget { get; set; }
+
         /// <summary>Which sections the client may draw, mirroring the plugin options.</summary>
         public BangumiUiLayout Layout { get; set; }
     }

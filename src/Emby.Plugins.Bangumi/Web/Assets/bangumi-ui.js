@@ -67,6 +67,9 @@
         }
     }
 
+    // 宽高比低于此值(比 1:2 还窄)的图改用 contain, 见 setPoster()。
+    var POSTER_FIT_RATIO = 0.5;
+
     function setPoster(node, url) {
         if (!url) {
             node.classList.add("bgmui-posterEmpty");
@@ -75,7 +78,16 @@
 
         // Preload so that a blocked or 404 image leaves the placeholder instead of a broken box.
         var probe = new Image();
-        probe.onload = function () { node.style.backgroundImage = "url(" + JSON.stringify(url) + ")"; };
+        probe.onload = function () {
+            // 卡片是 2:3。cover 从顶部对齐已经保住了头部, 但比 1:2 还窄的立绘
+            // 会被裁掉大半个身子, 这种情况宁可留白也要显示完整。
+            if (probe.naturalWidth > 0 && probe.naturalHeight > 0 &&
+                probe.naturalWidth / probe.naturalHeight < POSTER_FIT_RATIO) {
+                node.classList.add("bgmui-posterFit");
+            }
+
+            node.style.backgroundImage = "url(" + JSON.stringify(url) + ")";
+        };
         probe.onerror = function () { node.classList.add("bgmui-posterEmpty"); };
         probe.src = url;
     }
@@ -654,7 +666,16 @@
             if (!data || !data.SubjectId || !stillCurrent()) return;
 
             var lookups = data.Layout ? (data.Layout.CharacterNameLookups || 0) : 0;
-            if (lookups > 0) phase(lookups);
+            if (lookups <= 0) return;
+
+            // 服务端按条目缓存, 命中的往往已经是补齐中文名的那份 (夜间预热或上次访问建的),
+            // 这时第一遍返回的就是完整数据, 第二遍只会重渲染一次同样的内容。
+            if ((data.NameBudget || 0) >= lookups) {
+                log("phase 2 skipped, cached budget", data.NameBudget);
+                return;
+            }
+
+            phase(lookups);
         });
     }
 
