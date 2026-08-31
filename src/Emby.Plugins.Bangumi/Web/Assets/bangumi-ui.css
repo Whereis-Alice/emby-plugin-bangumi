@@ -151,6 +151,55 @@
     overflow: hidden;
 }
 
+/* ---------------------------------------------------------------- 骨架屏 */
+
+/*
+ * 冷缓存下第一阶段仍要几秒, 骨架屏占住和真实卡片一致的宽高, 数据到位后替换不跳版。
+ * 卡片是 div 而不是 button, 不可点击也不进 tab 序列。
+ */
+.bgmui-skeletonCard {
+    cursor: default;
+    pointer-events: none;
+}
+
+.bgmui-skeleton {
+    background-color: rgba(127, 127, 127, 0.18);
+    animation: bgmui-pulse 1.4s ease-in-out infinite;
+}
+
+.bgmui-skeletonLine {
+    margin-top: 0.4em;
+    height: 0.9em;
+    border-radius: 0.2em;
+}
+
+.bgmui-skeletonLine-short {
+    width: 60%;
+    margin-left: auto;
+    margin-right: auto;
+    margin-top: 0.25em;
+}
+
+@keyframes bgmui-pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.45; }
+    100% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bgmui-skeleton {
+        animation: none;
+    }
+
+    .bgmui-card {
+        transition: none;
+    }
+
+    .bgmui-card:hover {
+        transform: none;
+    }
+}
+
 /* ---------------------------------------------------------------- 制作人员 */
 
 /*

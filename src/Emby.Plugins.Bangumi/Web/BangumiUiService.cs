@@ -26,6 +26,13 @@ namespace Emby.Plugins.Bangumi.Web
 
         /// <summary>Bypass the server side cache for this call.</summary>
         public bool Refresh { get; set; }
+
+        /// <summary>
+        /// Overrides UiCharacterNameLookups for this call. The client asks for 0 first so the
+        /// page can render after four requests instead of forty-something, then asks again with
+        /// the configured budget to fill in the Chinese character names.
+        /// </summary>
+        public int? NameBudget { get; set; }
     }
 
     [Route("/Bangumi/Characters/{Id}", "GET")]
@@ -269,8 +276,12 @@ namespace Emby.Plugins.Bangumi.Web
             long resolvedItemId;
             if (!TryResolveSubject(itemId, out subjectId, out resolvedItemId)) return empty;
 
+            var nameBudget = request.NameBudget.HasValue
+                ? Math.Max(0, Math.Min(200, request.NameBudget.Value))
+                : Math.Max(0, options.UiCharacterNameLookups);
+
             var cacheKey = "detail:" + subjectId.ToString(CultureInfo.InvariantCulture) + ":"
-                           + options.UiCharacterNameLookups.ToString(CultureInfo.InvariantCulture);
+                           + nameBudget.ToString(CultureInfo.InvariantCulture);
 
             if (!request.Refresh)
             {
@@ -282,7 +293,8 @@ namespace Emby.Plugins.Bangumi.Web
             {
                 try
                 {
-                    var detail = await BuildDetailAsync(subjectId, options, cts.Token).ConfigureAwait(false);
+                    var detail = await BuildDetailAsync(subjectId, options, nameBudget, cts.Token)
+                        .ConfigureAwait(false);
                     Cache.Set(cacheKey, detail, TimeSpan.FromMinutes(Math.Max(1, options.UiCacheMinutes)));
                     return Rebind(detail, itemId, resolvedItemId, options);
                 }
@@ -401,7 +413,7 @@ namespace Emby.Plugins.Bangumi.Web
         // ------------------------------------------------------------------ building
 
         private async Task<BangumiUiDetail> BuildDetailAsync(
-            int subjectId, PluginOptions options, CancellationToken cancellationToken)
+            int subjectId, PluginOptions options, int nameBudget, CancellationToken cancellationToken)
         {
             var api = Plugin.RequireApi();
 
@@ -453,8 +465,7 @@ namespace Emby.Plugins.Bangumi.Web
 
             detail.Tags = detail.Tags ?? new List<BangumiUiTag>();
 
-            var nameBudget = Math.Max(0, options.UiCharacterNameLookups);
-            detail.Characters = await BuildCharactersAsync(characters, nameBudget, cancellationToken)
+            detail.Characters = await BuildCharactersAsync(characters, Math.Max(0, nameBudget), cancellationToken)
                 .ConfigureAwait(false);
             detail.VoiceActors = BuildVoiceActors(detail.Characters);
             detail.StaffGroups = BuildStaffGroups(persons, options);
@@ -678,7 +689,8 @@ namespace Emby.Plugins.Bangumi.Web
                 ShowTags = options.UiShowTags,
                 HideNativePeople = options.UiHideNativePeople,
                 GroupCharactersByRelation = options.UiGroupCharactersByRelation,
-                ProxyImages = options.UiProxyImages
+                ProxyImages = options.UiProxyImages,
+                CharacterNameLookups = Math.Max(0, options.UiCharacterNameLookups)
             };
         }
 

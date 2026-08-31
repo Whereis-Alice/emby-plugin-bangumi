@@ -179,6 +179,12 @@ namespace Emby.Plugins.Bangumi.Web
 
         /// <summary>Fetch bgm.tv artwork through the server instead of straight from the browser.</summary>
         public bool ProxyImages { get; set; }
+
+        /// <summary>
+        /// Configured character name translation budget. The client renders a first pass with 0
+        /// and only asks for a second, slower pass when this is greater than zero.
+        /// </summary>
+        public int CharacterNameLookups { get; set; }
     }
 
     /// <summary>GET /Bangumi/Characters/{Id} and /Bangumi/Persons/{Id}: the popup payload.</summary>

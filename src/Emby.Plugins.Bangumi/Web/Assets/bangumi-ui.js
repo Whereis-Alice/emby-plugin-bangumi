@@ -25,7 +25,12 @@
     var inFlight = {};
     var entityCache = {};
     var scheduleTimer = null;
-    var busy = false;
+
+    // A cold subject costs one Bangumi request per character, so a render can still be in
+    // flight when the user opens the next show. Every run takes a token and drops its own
+    // result once a newer run has started, instead of a single busy flag that would either
+    // block the new page or let a stale payload win.
+    var renderToken = 0;
 
     function log() {
         if (!window.BangumiUiDebug || !window.console) return;
@@ -133,25 +138,37 @@
 
     // ---------------------------------------------------------------- data
 
-    function loadDetail(itemId, refresh) {
-        if (!refresh && detailCache[itemId]) return Promise.resolve(detailCache[itemId]);
-        if (inFlight[itemId]) return inFlight[itemId];
+    function loadDetail(itemId, refresh, nameBudget) {
+        // Budget is part of the key: the fast pass and the translated pass are two payloads,
+        // both on the server and here.
+        var key = itemId + ":" + nameBudget;
 
-        var params = refresh ? { Refresh: true } : {};
+        if (!refresh && detailCache[key]) return Promise.resolve(detailCache[key]);
+        if (inFlight[key]) return inFlight[key];
+
+        var params = { NameBudget: nameBudget };
+        if (refresh) params.Refresh = true;
         var url = window.ApiClient.getUrl("Bangumi/Items/" + itemId + "/Detail", params);
 
         var promise = window.ApiClient.getJSON(url).then(function (data) {
-            delete inFlight[itemId];
-            detailCache[itemId] = data;
+            delete inFlight[key];
+            detailCache[key] = data;
             return data;
         }, function (err) {
-            delete inFlight[itemId];
-            log("detail request failed", itemId, err);
+            delete inFlight[key];
+            log("detail request failed", key, err);
             return null;
         });
 
-        inFlight[itemId] = promise;
+        inFlight[key] = promise;
         return promise;
+    }
+
+    function forgetDetail(itemId) {
+        var prefix = itemId + ":";
+        for (var key in detailCache) {
+            if (detailCache.hasOwnProperty(key) && key.indexOf(prefix) === 0) delete detailCache[key];
+        }
     }
 
     function loadEntity(kind, id) {
@@ -565,9 +582,32 @@
         log("rendered subject", data.SubjectId, "for item", itemId);
     }
 
-    function run() {
-        if (busy) return;
+    // 聚合端点即使走快通道也要几秒, 期间条目页看上去和没装插件一样, 用户会以为坏了。
+    // 先占好位置再发请求, 让"正在加载"这件事本身是可见的。
+    function skeleton(target, itemId) {
+        clear(target.page);
 
+        var root = el("div", ROOT_CLASS + " bgmui-loading");
+        var wrapper = section("Bangumi", "加载中…");
+        var row = cardRow();
+
+        for (var i = 0; i < 6; i++) {
+            var placeholder = el("div", "bgmui-card bgmui-skeletonCard");
+            placeholder.appendChild(el("div", "bgmui-poster bgmui-skeleton"));
+            placeholder.appendChild(el("div", "bgmui-skeleton bgmui-skeletonLine"));
+            placeholder.appendChild(el("div", "bgmui-skeleton bgmui-skeletonLine bgmui-skeletonLine-short"));
+            row.appendChild(placeholder);
+        }
+
+        wrapper.appendChild(row);
+        root.appendChild(wrapper);
+
+        target.people.parentNode.insertBefore(root, target.people);
+        // 立刻打标记: 骨架屏自己也会触发 MutationObserver, 没有标记就会自激循环。
+        target.page.setAttribute("data-bangumi-ui", itemId);
+    }
+
+    function run() {
         var itemId = currentItemId();
         if (!itemId) return;
 
@@ -579,25 +619,42 @@
             return;
         }
 
-        busy = true;
+        var token = ++renderToken;
         ensureStyle();
+        skeleton(target, itemId);
 
-        loadDetail(itemId, false).then(function (data) {
-            try {
-                // The user may have navigated away while the request was in flight.
-                if (currentItemId() !== itemId) return;
+        function stillCurrent() {
+            return token === renderToken && currentItemId() === itemId;
+        }
+
+        function phase(budget) {
+            return loadDetail(itemId, false, budget).then(function (data) {
+                if (!stillCurrent()) return null;
 
                 var current = findTarget();
-                if (!current) return;
+                if (!current) return null;
 
-                render(current, itemId, data);
-            } catch (err) {
-                log("render failed", err);
-            } finally {
-                busy = false;
-            }
-        }, function () {
-            busy = false;
+                try {
+                    render(current, itemId, data);
+                } catch (err) {
+                    log("render failed", err);
+                    return null;
+                }
+
+                return data;
+            }, function (err) {
+                log("phase failed", budget, err);
+                return null;
+            });
+        }
+
+        // 两阶段: 第一遍预算 0, 服务端只发 4 个 Bangumi 请求, 几秒内出全部栏位
+        // (未命中中文名的角色先显示日文原名); 第二遍按配置预算补中文名后整体重渲染。
+        phase(0).then(function (data) {
+            if (!data || !data.SubjectId || !stillCurrent()) return;
+
+            var lookups = data.Layout ? (data.Layout.CharacterNameLookups || 0) : 0;
+            if (lookups > 0) phase(lookups);
         });
     }
 
@@ -627,7 +684,7 @@
                 var itemId = currentItemId();
                 if (!itemId) return;
 
-                delete detailCache[itemId];
+                forgetDetail(itemId);
                 entityCache = {};
 
                 var target = findTarget();
@@ -636,7 +693,8 @@
                     target.page.removeAttribute("data-bangumi-ui");
                 }
 
-                loadDetail(itemId, true).then(schedule);
+                // Refresh=true 只用来失效服务端缓存, 真正的重绘仍走 run() 的两阶段。
+                loadDetail(itemId, true, 0).then(schedule);
             },
             clearCache: function () {
                 detailCache = {};
