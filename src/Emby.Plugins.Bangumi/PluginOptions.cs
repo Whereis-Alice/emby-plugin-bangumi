@@ -245,8 +245,8 @@ namespace Emby.Plugins.Bangumi
         public bool UiShowTags { get; set; } = true;
 
         [DisplayName("隐藏自带的演职人员栏")]
-        [Description("插件的栏位渲染成功后，把 Emby 原来那一排藏起来，避免同样的人出现两遍。默认保留，因为原生那排点进去是 Emby 的人物页（有本地媒体库的其他作品），插件的卡片点开是 Bangumi 简介弹窗，两者用途不同。")]
-        public bool UiHideNativePeople { get; set; } = false;
+        [Description("插件的栏位渲染成功后，把 Emby 原来那一排藏起来，避免同样的人出现两遍——默认开启。关掉可以两排对照：原生那排点进去是 Emby 的人物页（能看到这个人在本地媒体库里的其他作品），插件的卡片点开是 Bangumi 简介弹窗。只有插件栏位真的渲染出来才会隐藏，接口失败时原生那排会留在原处。")]
+        public bool UiHideNativePeople { get; set; } = true;
 
         [DisplayName("图片经服务端转发")]
         [Description("角色 / 人物头像来自 lain.bgm.tv。浏览器通常没有配代理，而插件有，所以默认让服务端代取（/emby/Bangumi/Ui/Image，只允许 bgm.tv 域名，浏览器端缓存 7 天）。网络能直连 bgm.tv 时关掉可以省一次中转。")]
@@ -268,6 +268,9 @@ namespace Emby.Plugins.Bangumi
         [DisplayName("夜间预热条目页面缓存")]
         [Description("每晚枚举媒体库里带 Bangumi id 的剧集，把已过期或还没缓存过的条目提前建好，这样打开页面时角色和制作人员是立刻出现的。新加入的番剧会在下一次运行时自动纳入；没等到任务也只是第一次打开慢一点。")]
         public bool UiPrewarmCache { get; set; } = true;
+        [DisplayName("新增条目后立即预热")]
+        [Description("挂在媒体库的新增 / 更新事件上：刚入库或刚重新识别的剧集，在写入安静 20 秒后立刻把角色、声优、制作人员取好，不用等夜里那一次。同一条目的连续事件会合并成一次，已经缓存过的条目直接跳过——所以一次日常扫描通常一个请求都不会发。")]
+        public bool UiPrewarmOnAdd { get; set; } = true;
 
         [DisplayName("夜间预热每次最多处理条目数")]
         [Description("一个条目大约要 30 秒（受请求间隔限制），默认 60 个足够覆盖一般规模的库。设为 0 表示不限制。")]

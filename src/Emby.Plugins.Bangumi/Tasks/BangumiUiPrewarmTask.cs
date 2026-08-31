@@ -21,8 +21,10 @@ namespace Emby.Plugins.Bangumi.Tasks
     ///
     /// The cache lifetime doubles as the refresh interval: this task only builds what is missing or
     /// expired, so a run over an already warm library finishes in seconds and a subject is refreshed
-    /// once its entry ages out. Newly added series are picked up by the next run because the library
-    /// is enumerated from scratch every time; until then they simply load the slow way.
+    /// once its entry ages out. Newly added series do not have to wait for the next run:
+    /// <see cref="BangumiUiPrewarmEntryPoint"/> watches the library events and builds those within a
+    /// minute. This task remains the safety net - it catches whatever the events missed (server was
+    /// down, queue was full, a build failed) and it is what actually refreshes expired entries.
     /// </summary>
     public class BangumiUiPrewarmTask : IScheduledTask, IConfigurableScheduledTask
     {
@@ -46,7 +48,7 @@ namespace Emby.Plugins.Bangumi.Tasks
         public string Category => BangumiConstants.PluginName;
 
         public string Description =>
-            "提前把媒体库里每个 Bangumi 条目的角色、声优、制作人员和关联条目取好并写入本地缓存，打开条目页面时直接显示。只处理没缓存过或缓存已过期的条目，新加入的番剧会在下一次运行时自动纳入。";
+            "提前把媒体库里每个 Bangumi 条目的角色、声优、制作人员和关联条目取好并写入本地缓存，打开条目页面时直接显示。只处理没缓存过或缓存已过期的条目。新加入的番剧不用等这里——插件挂在媒体库事件上，入库后一分钟内就会自己预热，这个任务负责刷新过期条目和补上漏掉的。";
 
         public bool IsEnabled
         {
