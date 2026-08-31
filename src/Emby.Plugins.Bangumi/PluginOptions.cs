@@ -78,6 +78,10 @@ namespace Emby.Plugins.Bangumi
         [Description("Emby 自己解析不出集号时（常见于 \"[组名][番名][2026][01][HEVC]\" 这种纯方括号命名），从文件名里再解析一次并写回集号。OP / ED / 特典 / 半集（03.5）一律跳过，方括号里的年份和分辨率也会被排除。")]
         public bool ParseEpisodeNumberFromFileName { get; set; } = true;
 
+        [DisplayName("纠正明显不可能的集号")]
+        [Description("Emby 自己会把发布组文件名里的日期读成季号 + 集号（\"...-240518...\" 被判成 S2405E18）。仅在季号 ≥ 1000（不存在这样的季）或集号 ≥ 1000 时介入：文件名带半集标记（15.5）的按特典处理，写入 Season 0 并用整数部分当集号；能从文件名重新解析出集号的只改集号；都不成立时只在日志里给出改名建议，不擅自改动。")]
+        public bool FixImplausibleEpisodeNumbers { get; set; } = true;
+
         [DisplayName("集号匹配方式")]
         [Description("Auto：先按季内集号 ep 匹配，匹配不到再按全系列连续集号 sort 匹配（推荐）。")]
         public EpisodeNumberMode EpisodeNumberMode { get; set; } = EpisodeNumberMode.Auto;

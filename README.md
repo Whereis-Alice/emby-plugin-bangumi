@@ -37,6 +37,12 @@ TMDB 和 TheTVDB 把一部番的所有季塞进同一个条目的 `Season 1..N`�
   自己解析不出集号，整集会掉出季度、还会被统一命名成同一个「第 01 集」。插件在 provider
   里再解析一次并回写，OP / ED / 特典 / 半集（`03.5`）一律跳过，方括号里的年份（`2026`）
   和分辨率（`1080`）也不会被当成集号。
+- **日期被当成编号时会被纠正**：合作特番的文件名里带日期
+  （`[15.5][Crayon_Shin-chan-240518_collaborateur-part]`），Emby 在任何 provider 之前就把它读成
+  `S2405E18`，凭空造出一个「第 2405 季」。四位数的季号 / 集号不可能是真的，插件据此介入：
+  带半集标记（`15.5`）的按特典处理，写成 `S00E15`；能从文件名重新解析出集号的只改集号；
+  两者都不成立时只在日志里给出改名建议，绝不写入猜测。实测 `Wonderful Precure! [15.5]`
+  已从「第 2405 季」移进「特别篇」，正片 36 集编号不受影响。
 - **跨季连续集号**：发布组按全系列连续号命名时（`仙逆 … [147]`），Bangumi 的当季条目里
   根本没有这个集号——但它正好等于 `sort`。常规匹配全部失败后会沿「前传 / 续集」走完整条
   franchise 链，用 `sort` 精确命中。实测 `仙逆 147` → 条目 `630676`（年番3）的 `ep 19`。
@@ -88,7 +94,8 @@ TMDB 和 TheTVDB 把一部番的所有季塞进同一个条目的 `Season 1..N`�
 
 ### 从 Release 安装
 
-1. 下载 `Emby.Plugins.Bangumi.dll`。
+1. 从 [Releases](https://github.com/Whereis-Alice/emby-plugin-bangumi/releases) 下载
+   `Emby.Plugins.Bangumi.dll`（同时提供 `.sha256`，由 `release.yml` 在打 `v*` tag 时自动构建上传）。
 2. 放进 Emby 的插件目录：
    - Windows 便携版：`<Emby 根目录>\programdata\plugins\`
    - Windows 安装版：`%AppData%\Emby-Server\programdata\plugins\`
@@ -138,6 +145,7 @@ dotnet build src/Emby.Plugins.Bangumi/Emby.Plugins.Bangumi.csproj -c Release \
 | 优先使用中文标题 | 开 | 用 `name_cn` 作标题，原文名进「原始标题」 |
 | 同时写入原文标题 | 开 | |
 | 从文件名解析集号 | 开 | Emby 解析不出集号时再从文件名解析一次并回写。OP / ED / 特典 / 半集跳过 |
+| 纠正明显不可能的集号 | 开 | 季号或集号 ≥ 1000 时才介入（这种数只可能来自文件名里的日期或分辨率）。半集写进 Season 0，否则只改集号，都不成立时仅记日志 |
 | 集号匹配方式 | Auto | Auto = 先 `ep` 再 `sort`。见「集号匹配」 |
 | 集号偏移 | 0 | 文件是 E01–E12 但 Bangumi 记作 13–24 时填 12 |
 | 自动解析续集季度 | 开 | 关闭后所有季共用系列主条目 |
@@ -367,6 +375,11 @@ Emby 的人物是**懒加载**的：条目刮完之后，每个声优 / 制作�
 `仙逆 年番3`（`630676`，79 staff / **0 characters**），其最近的前作
 `仙逆 年番2`（`526970`）能提供角色表。
 
+**人员数量上限会截断角色。**「声优上限」与「人员总上限」是按人数硬截的，无声优角色排在
+声优之后，所以顶到上限时先被截掉的就是它们。实测排球少年第二季（条目 `120236`）：
+上限 100 / 200 时 269 个人员只写进 200 条、22 个无声优角色只落地 8 个；提到 150 / 300 后
+269 条全部写入、22 个角色一个不少。人员多的长番建议把这两个值放宽。
+
 ### 季度解析
 
 Emby 请求 `Season N` 的元数据时，如果这个季度自身没有 Bangumi ID，按三级策略解析：
@@ -515,6 +528,21 @@ Emby 的 `MergeBaseItemData` 在 `ReplaceAllMetadata=true` 时会**无条件**�
 > `FullRefresh` + `ReplaceAllMetadata=true` 即可。Emby 的 `BeforeMetadataRefresh`
 > 会重新从文件名解析编号，provider 原样回写并保存，多余的 Season 由 Emby 自动回收。
 
+原样回写有一个例外：Emby 解析出来的编号**根本不可能存在**的时候。发布组给合作特番起的名字
+`[FLsnow＆WBX] Wonderful Precure! [15.5][Crayon_Shin-chan-240518_collaborateur-part][1080P].mkv`
+里，`240518` 是播出日期，Emby 把它读成第 2405 季第 18 集，于是这一集掉进一个凭空出现的
+「第 2405 季」里，后面所有查询也都问错了条目。没有哪部动画有四位数的季号或集号，所以
+`ImplausibleNumberFloor = 1000` 以上一律视为解析事故：
+
+- 文件名带半集标记（`15.5`）→ 半集本来就不是它所在那一季的正片，`ParentIndexNumber = 0`、
+  `IndexNumber = 15`。用整数部分当特典编号不会和正片第 15 集撞号。
+- 否则若 `ParseEpisodeNumber` 能从文件名里解析出一个数 → 只改 `IndexNumber`，季号不动。
+- 都不成立 → 打一条 `Warn` 说明该改名或移进 Specials，**不写猜测值**。
+
+门槛定在 1000 是刻意保守的：**错但可能**的编号一概不管，因为在合理输入上推翻 Emby 的解析
+会弄坏的文件远多于修好的。实测这一集从「第 2405 季」进了「特别篇」（`S00E15`），
+空掉的「第 2405 季」在下次媒体库扫描时被 Emby 回收。
+
 ## Bangumi API 的坑
 
 以下都是踩过的，详细版本见 [`docs/api-notes.md`](docs/api-notes.md)。
@@ -563,8 +591,10 @@ Emby 的 `MergeBaseItemData` 在 `ReplaceAllMetadata=true` 时会**无条件**�
   **在「识别」界面手填 Bangumi ID** 即可，插件的三个 External ID 就是为这种情况准备的。
 - 同类情况还有 `乱马½`：Bangumi 记作 `乱马1/2`，分数归一化能对上，但同名重制版
   与旧版条目并存，相关性一般，建议也手填 ID。
-- **受限（NSFW）条目不填 Token 就没有人员表。** 见「Bangumi API 的坑」，
-  这不是匹配问题，条目 ID 是对的，只是 `/persons` 与 `/characters` 被 404 掉了。
+- **受限（NSFW）条目不填 Token 就什么都拿不到。** 见「Bangumi API 的坑」，这不是匹配问题，
+  条目 ID 是对的，只是 `/persons`、`/characters`、`/episodes` 全被 404 掉了。实测本地 4 部
+  受限条目（`516604` / `621602` / `295001` / `395537`）填 Token 前后：分集元数据 0 → 38 集
+  全部命中，人员表 2 / 3 / 6 / 5 条 → 13 / 20 / 35 / 22 条。**填 Token 是唯一解法。**
 - 系列主条目本身就叫「系列名」而各季标题里不带季度标记时（少数长番），
   季度解析会落到第三级「链上序号」，日志里会标明 `chain ordinal`，这一档不保证正确。
 - **文件名里没有季号时，插件救不了。** 像

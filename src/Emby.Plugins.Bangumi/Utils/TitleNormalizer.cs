@@ -233,6 +233,14 @@ namespace Emby.Plugins.Bangumi.Utils
         }
 
         /// <summary>
+        /// Half episodes ("[15.5]", "- 03.5"). <c>IndexNumber</c> is an int, so the fraction is
+        /// unrepresentable in a regular season; the number is only usable as a specials index.
+        /// </summary>
+        private static readonly Regex FractionalEpisode = new Regex(
+            @"(?:^|[\s\.\-_\[\(])(?<n>\d{1,4})\.5(?:$|[\s\.\-_\]\)vV])",
+            RegexOptions.Compiled);
+
+        /// <summary>
         /// Last-resort episode number for a file Emby's own resolver could not number.
         ///
         /// Emby decides <c>IndexNumber</c> long before any provider runs, and when it fails the
@@ -255,7 +263,8 @@ namespace Emby.Plugins.Bangumi.Utils
             if (SpecialMarker.IsMatch(text)) return null;
 
             // A fractional episode cannot be represented, and guessing would overwrite a real one.
-            if (Regex.IsMatch(text, @"(?:^|[\s\.\-_\[\(])\d{1,4}\.5(?:$|[\s\.\-_\]\)vV])")) return null;
+            // BangumiEpisodeProvider picks these up separately via ParseFractionalEpisodeBase.
+            if (FractionalEpisode.IsMatch(text)) return null;
 
             foreach (var pattern in EpisodeNumberPatterns)
             {
@@ -284,6 +293,24 @@ namespace Emby.Plugins.Bangumi.Utils
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Integer part of a half episode ("[15.5]" -> 15), or null when the name carries no
+        /// fraction. Only meaningful together with <c>ParentIndexNumber = 0</c>: filed as special
+        /// 15 it cannot collide with the regular episode 15 that the fraction sits between.
+        /// </summary>
+        public static int? ParseFractionalEpisodeBase(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName)) return null;
+
+            var text = ToHalfWidth(KnownExtension.Replace(fileName.Trim(), string.Empty));
+            if (text.Length == 0) return null;
+
+            var match = FractionalEpisode.Match(text);
+            if (!match.Success) return null;
+
+            return ParsePositiveInt(match.Groups["n"].Value);
         }
 
         /// <summary>

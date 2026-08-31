@@ -350,6 +350,33 @@ person；头像刮削器先试 person 端点，空了再试 character 端点。
 注意 `/emby/Items?Ids={seasonId}&Fields=People` 对 Season 会**回落显示系列的人员**，
 所以验证「季度是否真的写入了自己的人员」必须**对比人员名单内容**，光比条数会被骗。
 
+### 5.9 🔑 Token 前后的实测差值（受限条目）
+
+1.3 只说了受限条目的子资源会 404。填上 Access Token 之后的完整实测（本地 4 部受限条目，
+`IncludeNsfw = true`）：
+
+| 条目 | 名称 | `/episodes` | `/characters` | 其中 `actors` 为空的 type=1 | `/persons` |
+|---|---|---|---|---|---|
+| `516604` | 罪恶之渊 | 8 | 9 | 4 | 10 |
+| `621602` | 淫狱团地 | 12 | 21 | 0 | 13 |
+| `295001` | EVERGLOW LAND | 8 | 3 | 1 | 45 |
+| `395537` | 后宫露营！ | 8 | 5 | 1 | 23 |
+
+无 Token 时这四行**全部是 404**。落到 Emby 里的结果：38 集分集元数据从 0 变成全部命中
+（37 集有简介，`295001` 有一集 Bangumi 本身没写），系列人员表从 2 / 3 / 6 / 5 条变成
+13 / 20 / 35 / 22 条，无声优角色也按 4 / 0 / 1 / 1 如实进了演员表。
+
+⚠️ Token 只在**插件启动时**从配置读一次，改完要重启 Emby Server 才生效。
+
+### 5.10 `/emby/Items?Fields=People` 不返回 `People[].ProviderIds`
+
+这是 Emby 侧的坑，但会直接坑掉验证脚本。该端点的 `People` 元素只有
+`Name` / `Id` / `Role` / `Type` / `PrimaryImageTag` 五个字段，**没有 `ProviderIds`**，
+所以「有多少条角色是以角色本人身份入表的」不能靠 `ProviderIds.BangumiCharacter` 数。
+可用的判据是 `Role`：正常声优的 `Role` 是它配的角色名，而角色本人入表时 `Role` 写的是
+Bangumi 的关系标签，只会是 `主角` / `配角` / `客串` 三个值之一。实测排球少年第二季按此判据
+数出 22 条，与 `/v0/subjects/120236/characters` 里 `actors` 为空的 type=1 角色数**完全一致**。
+
 ## 6. 限速与错误处理
 
 - 插件默认两次请求最小间隔 **340 ms**（`SemaphoreSlim` + 时间戳），一次媒体库

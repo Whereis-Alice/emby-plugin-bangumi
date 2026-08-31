@@ -34,6 +34,13 @@ namespace Emby.Plugins.Bangumi.Providers
         }
 
         /// <summary>
+        /// Smallest season or episode number that can only have come from a date or a resolution.
+        /// The longest running anime sit in the hundreds of episodes and nothing has ever had a four
+        /// digit season, so 1000 separates "wrong" from "impossible" with room to spare.
+        /// </summary>
+        private const int ImplausibleNumberFloor = 1000;
+
+        /// <summary>
         /// Emby never searches for episodes remotely by name; identification happens through the
         /// parent series, so an empty list is the correct answer here.
         /// </summary>
@@ -87,6 +94,73 @@ namespace Emby.Plugins.Bangumi.Providers
                     Logger.Info(
                         "Bangumi: Emby left \"{0}\" unnumbered, recovered episode {1} from the file name",
                         fileName, parsedIndex.Value);
+                }
+            }
+
+            // Emby's resolver runs before any provider and is happy to read a date out of a
+            // collaboration release name: "[FLsnow&WBX] Wonderful Precure! [15.5]
+            // [Crayon_Shin-chan-240518_collaborateur-part][1080P]" becomes season 2405 episode 18,
+            // which invents a "Season 2405" in the UI and sends every lookup below to the wrong
+            // subject. The provider cannot pre-empt the resolver, so the only option is to notice
+            // that the value is impossible - no anime has a four digit season or episode - and
+            // repair it here. Deliberately narrow: a wrong but *possible* number is left alone,
+            // because overruling the resolver on plausible input would break far more files than
+            // it fixes.
+            if (options.FixImplausibleEpisodeNumbers && !string.IsNullOrWhiteSpace(info.Path))
+            {
+                var seasonImplausible = info.ParentIndexNumber.HasValue &&
+                    info.ParentIndexNumber.Value >= ImplausibleNumberFloor;
+                var indexImplausible = info.IndexNumber.HasValue &&
+                    info.IndexNumber.Value >= ImplausibleNumberFloor;
+
+                if (seasonImplausible || indexImplausible)
+                {
+                    var badName = Path.GetFileName(info.Path);
+
+                    // A half episode is genuinely not a numbered episode of the season it sits in,
+                    // so specials is not a fallback here, it is the right answer. Special 15 for
+                    // "15.5" also cannot collide with the regular episode 15.
+                    var fractionalBase = TitleNormalizer.ParseFractionalEpisodeBase(badName);
+                    var recovered = fractionalBase.HasValue
+                        ? null
+                        : TitleNormalizer.ParseEpisodeNumber(badName);
+
+                    if (fractionalBase.HasValue)
+                    {
+                        Logger.Info(
+                            "Bangumi: \"{0}\" was resolved as S{1}E{2} from a date in the file name; " +
+                            "it is a half episode, filing it as special {3}",
+                            badName, info.ParentIndexNumber, info.IndexNumber, fractionalBase.Value);
+                        info.ParentIndexNumber = 0;
+                        info.IndexNumber = fractionalBase;
+                        info.IndexNumberEnd = null;
+                        result.Item.ParentIndexNumber = 0;
+                        result.Item.IndexNumber = fractionalBase;
+                        result.Item.IndexNumberEnd = null;
+                        numberedFromFileName = true;
+                    }
+                    else if (recovered.HasValue)
+                    {
+                        Logger.Info(
+                            "Bangumi: \"{0}\" was resolved as S{1}E{2}; episode {3} is the only " +
+                            "number the file name actually carries, using it",
+                            badName, info.ParentIndexNumber, info.IndexNumber, recovered.Value);
+                        info.IndexNumber = recovered;
+                        info.IndexNumberEnd = null;
+                        result.Item.IndexNumber = recovered;
+                        result.Item.IndexNumberEnd = null;
+                        numberedFromFileName = true;
+                    }
+                    else
+                    {
+                        // Nothing safe to substitute. Say so once per refresh rather than writing a
+                        // guess into the library.
+                        Logger.Warn(
+                            "Bangumi: \"{0}\" was resolved as S{1}E{2}, which cannot be real - the " +
+                            "numbers come from a date or a resolution in the file name. Rename the " +
+                            "file (for example \"SxxEyy\") or move it into Specials.",
+                            badName, info.ParentIndexNumber, info.IndexNumber);
+                    }
                 }
             }
 
