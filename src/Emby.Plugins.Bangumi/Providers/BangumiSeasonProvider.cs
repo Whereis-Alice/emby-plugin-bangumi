@@ -260,7 +260,11 @@ namespace Emby.Plugins.Bangumi.Providers
             if (string.IsNullOrWhiteSpace(info.SeriesName)) return null;
 
             var keyword = info.SeriesName.Trim() + " 第" + seasonNumber.ToString(CultureInfo.InvariantCulture) + "季";
-            var hits = await SearchAsync(keyword, BangumiConstants.SubjectType.Anime, null, cancellationToken)
+            var subjectType = chain != null && chain.Count > 0 &&
+                              chain[0].Type == BangumiConstants.SubjectType.Real
+                ? BangumiConstants.SubjectType.Real
+                : BangumiConstants.SubjectType.Anime;
+            var hits = await SearchAsync(keyword, subjectType, null, cancellationToken)
                 .ConfigureAwait(false);
             if (hits == null || hits.Count == 0) return null;
 

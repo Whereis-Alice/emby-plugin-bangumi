@@ -40,8 +40,8 @@ namespace Emby.Plugins.Bangumi.Providers
                 }
             }
 
-            var ranked = await SearchAsync(
-                searchInfo.Name, searchInfo.Path, BangumiConstants.SubjectType.Anime, searchInfo.Year, cancellationToken)
+            var ranked = await SearchVideoAsync(
+                searchInfo.Name, searchInfo.Path, searchInfo.Year, cancellationToken)
                 .ConfigureAwait(false);
 
             foreach (var subject in ranked)
@@ -86,8 +86,8 @@ namespace Emby.Plugins.Bangumi.Providers
                 // Unattended refreshes go through the confidence gate. Writing the wrong subject id
                 // here is not a title typo: artwork, the whole episode list and every credited person
                 // follow from it, and nothing in the UI hints that it happened.
-                var outcome = await SearchDetailedAsync(
-                    info.Name, info.Path, BangumiConstants.SubjectType.Anime, info.Year, cancellationToken)
+                var outcome = await SearchVideoDetailedAsync(
+                    info.Name, info.Path, info.Year, false, cancellationToken)
                     .ConfigureAwait(false);
                 subject = await HydrateAsync(PickAutoMatch(outcome, info.Name, options), cancellationToken)
                     .ConfigureAwait(false);

@@ -48,7 +48,7 @@ namespace Emby.Plugins.Bangumi
         public override string EditorTitle => "Bangumi 番组计划";
 
         public override string EditorDescription =>
-            "从 bgm.tv 抓取动画元数据。Bangumi 每一季是独立条目，因此天生支持「第二季 / 第三季」这类被其他刮削器合并的番剧。" +
+            "从 bgm.tv 抓取动画与特摄元数据。Bangumi 每一季是独立条目，因此天生支持「第二季 / 第三季」这类被其他刮削器合并的作品。" +
             "中国大陆以外或被墙的网络环境请填写代理地址。";
 
         // ---------- 账号 ----------
@@ -333,6 +333,10 @@ namespace Emby.Plugins.Bangumi
         public int CacheMinutes { get; set; } = 30;
 
         // ---------- 刮削器行为 ----------
+
+        [DisplayName("同时支持特摄 / 三次元条目")]
+        [Description("动画没有高置信匹配时，再搜索 Bangumi 的三次元(type=6)条目。用于奥特曼、假面骑士、超级战队等特摄；手动「识别」会同时列出动画与三次元候选。")]
+        public bool IncludeRealSubjects { get; set; } = true;
 
         [DisplayName("搜索结果数量")]
         [MinValue(1)]

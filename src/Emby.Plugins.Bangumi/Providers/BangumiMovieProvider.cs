@@ -12,9 +12,9 @@ using MediaBrowser.Model.Providers;
 namespace Emby.Plugins.Bangumi.Providers
 {
     /// <summary>
-    /// Anime films. On Bangumi these are still subject type 2 (anime); only the
-    /// <c>platform</c> field distinguishes them ("剧场版"), which is why the platform bonus
-    /// is inverted here.
+    /// Animated and live-action films. Bangumi stores animated films as subject type 2 and
+    /// tokusatsu/live-action films as type 6. For animation the <c>platform</c> field distinguishes
+    /// a theatrical release ("剧场版"), which is why the platform bonus is inverted here.
     /// </summary>
     public class BangumiMovieProvider : BangumiProviderBase,
         IRemoteMetadataProvider<Movie, MovieInfo>, IHasOrder
@@ -52,8 +52,8 @@ namespace Emby.Plugins.Bangumi.Providers
                 }
             }
 
-            var ranked = await SearchAsync(
-                searchInfo.Name, searchInfo.Path, BangumiConstants.SubjectType.Anime, searchInfo.Year, cancellationToken)
+            var ranked = await SearchVideoAsync(
+                searchInfo.Name, searchInfo.Path, searchInfo.Year, cancellationToken)
                 .ConfigureAwait(false);
 
             foreach (var subject in ranked)
@@ -88,8 +88,8 @@ namespace Emby.Plugins.Bangumi.Providers
 
             if (subject == null)
             {
-                var outcome = await SearchDetailedAsync(
-                    info.Name, info.Path, BangumiConstants.SubjectType.Anime, info.Year, cancellationToken)
+                var outcome = await SearchVideoDetailedAsync(
+                    info.Name, info.Path, info.Year, false, cancellationToken)
                     .ConfigureAwait(false);
                 subject = await HydrateAsync(PickAutoMatch(outcome, info.Name, options), cancellationToken)
                     .ConfigureAwait(false);

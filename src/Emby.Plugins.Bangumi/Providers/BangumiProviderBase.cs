@@ -310,6 +310,52 @@ namespace Emby.Plugins.Bangumi.Providers
         }
 
         /// <summary>
+        /// Manual video search. Anime and, when enabled, real-world subjects are both returned so
+        /// tokusatsu can be identified without weakening the automatic confidence gate.
+        /// </summary>
+        protected async Task<List<BangumiSubject>> SearchVideoAsync(
+            string rawTitle, string pathHint, int? year, CancellationToken cancellationToken)
+        {
+            var outcome = await SearchVideoDetailedAsync(
+                rawTitle, pathHint, year, true, cancellationToken).ConfigureAwait(false);
+            return outcome.Ranked;
+        }
+
+        /// <summary>
+        /// Automatic video search. Anime remains the fast path; type=6 is queried only when anime
+        /// has no strong title match. Exhaustive mode is reserved for the manual identify dialog.
+        /// </summary>
+        protected async Task<SearchOutcome> SearchVideoDetailedAsync(
+            string rawTitle, string pathHint, int? year, bool exhaustive,
+            CancellationToken cancellationToken)
+        {
+            var anime = await SearchDetailedAsync(
+                rawTitle, pathHint, BangumiConstants.SubjectType.Anime, year, cancellationToken)
+                .ConfigureAwait(false);
+
+            var options = CurrentOptions;
+            if (!options.IncludeRealSubjects || (!exhaustive && anime.TitleScore >= StrongTitleScore))
+            {
+                return anime;
+            }
+
+            var real = await SearchDetailedAsync(
+                rawTitle, pathHint, BangumiConstants.SubjectType.Real, year, cancellationToken)
+                .ConfigureAwait(false);
+
+            var titles = BuildTitleCandidates(rawTitle, pathHint, LocalTitleHints(pathHint, options));
+            var candidates = anime.Ranked.Concat(real.Ranked)
+                .Where(s => s != null && s.Id > 0)
+                .GroupBy(s => s.Id)
+                .Select(g => g.First())
+                .ToList();
+
+            var merged = new SearchOutcome();
+            Rank(candidates, titles, year, merged);
+            return merged;
+        }
+
+        /// <summary>
         /// Everything <see cref="PickAutoMatch"/> needs to decide whether the best candidate is
         /// good enough to write without a human looking at it.
         /// </summary>

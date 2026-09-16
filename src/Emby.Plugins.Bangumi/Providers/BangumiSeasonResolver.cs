@@ -18,6 +18,8 @@ namespace Emby.Plugins.Bangumi.Providers
 
         public string NameCn { get; set; }
 
+        public int Type { get; set; }
+
         /// <summary>Season number parsed out of the title, when the title carried one.</summary>
         public int? SeasonMarker { get; set; }
 
@@ -111,7 +113,11 @@ namespace Emby.Plugins.Bangumi.Providers
             var root = await api.GetSubjectAsync(rootId, cancellationToken).ConfigureAwait(false);
             chain.Add(root == null
                 ? new SubjectChainEntry { Id = rootId }
-                : Entry(root.Id, root.Name, root.NameCn));
+                : Entry(root.Id, root.Name, root.NameCn, root.Type));
+
+            var subjectType = root != null && IsVideoSubjectType(root.Type)
+                ? root.Type
+                : BangumiConstants.SubjectType.Anime;
 
             var currentId = rootId;
             for (var depth = 0; depth < MaxChainDepth; depth++)
@@ -123,7 +129,7 @@ namespace Emby.Plugins.Bangumi.Providers
                 // dates, and Bangumi ids grow monotonically with registration time.
                 var next = related
                     .Where(r => r != null && r.Id > 0 &&
-                                r.Type == BangumiConstants.SubjectType.Anime &&
+                                r.Type == subjectType &&
                                 string.Equals(r.Relation, SequelRelation, StringComparison.Ordinal) &&
                                 !visited.Contains(r.Id))
                     .OrderBy(r => r.Id)
@@ -132,7 +138,7 @@ namespace Emby.Plugins.Bangumi.Providers
                 if (next == null) break;
 
                 visited.Add(next.Id);
-                chain.Add(Entry(next.Id, next.Name, next.NameCn));
+                chain.Add(Entry(next.Id, next.Name, next.NameCn, next.Type));
                 currentId = next.Id;
             }
 
@@ -249,6 +255,10 @@ namespace Emby.Plugins.Bangumi.Providers
             var visited = new HashSet<int>();
             visited.Add(startId);
 
+            var root = await api.GetSubjectAsync(startId, cancellationToken).ConfigureAwait(false);
+            var subjectType = root != null && IsVideoSubjectType(root.Type)
+                ? root.Type
+                : BangumiConstants.SubjectType.Anime;
             var currentId = startId;
             for (var depth = 0; depth < MaxChainDepth; depth++)
             {
@@ -258,7 +268,7 @@ namespace Emby.Plugins.Bangumi.Providers
                 // Lowest id first: the oldest registration is the earliest work in the franchise.
                 var previous = related
                     .Where(r => r != null && r.Id > 0 &&
-                                r.Type == BangumiConstants.SubjectType.Anime &&
+                                r.Type == subjectType &&
                                 string.Equals(r.Relation, PrequelRelation, StringComparison.Ordinal) &&
                                 !visited.Contains(r.Id))
                     .OrderBy(r => r.Id)
@@ -297,7 +307,7 @@ namespace Emby.Plugins.Bangumi.Providers
                 // the one registered last.
                 var previous = related
                     .Where(r => r != null && r.Id > 0 &&
-                                r.Type == BangumiConstants.SubjectType.Anime &&
+                                r.Type == current.Type &&
                                 string.Equals(r.Relation, PrequelRelation, StringComparison.Ordinal) &&
                                 !visited.Contains(r.Id))
                     .OrderByDescending(r => r.Id)
@@ -305,7 +315,7 @@ namespace Emby.Plugins.Bangumi.Providers
 
                 if (previous == null) break;
 
-                var entry = Entry(previous.Id, previous.Name, previous.NameCn);
+                var entry = Entry(previous.Id, previous.Name, previous.NameCn, previous.Type);
 
                 // Checked both ways round so that an unmarked "後半" subject can still recognise the
                 // marked first cour as its own season.
@@ -350,13 +360,20 @@ namespace Emby.Plugins.Bangumi.Providers
             return !string.IsNullOrWhiteSpace(title) && SplitCourHint.IsMatch(title);
         }
 
-        private static SubjectChainEntry Entry(int id, string name, string nameCn)
+        private static bool IsVideoSubjectType(int type)
+        {
+            return type == BangumiConstants.SubjectType.Anime ||
+                   type == BangumiConstants.SubjectType.Real;
+        }
+
+        private static SubjectChainEntry Entry(int id, string name, string nameCn, int type)
         {
             return new SubjectChainEntry
             {
                 Id = id,
                 Name = name,
                 NameCn = nameCn,
+                Type = type,
                 SeasonMarker = SeasonMarkerOf(name, nameCn),
             };
         }
