@@ -22,6 +22,9 @@ jobs:
       - name: Build
         run: dotnet build src/Emby.Plugins.Bangumi/Emby.Plugins.Bangumi.csproj -c Release
 
+      - name: Browser logic tests
+        run: node --test tests/episode-navigator.test.cjs
+
       - uses: actions/upload-artifact@v4
         with:
           name: Emby.Plugins.Bangumi

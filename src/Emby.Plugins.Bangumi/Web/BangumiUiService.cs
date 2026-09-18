@@ -64,6 +64,19 @@ namespace Emby.Plugins.Bangumi.Web
     public class GetBangumiUiStyle
     {
     }
+
+    [Route("/Bangumi/Ui/episode-navigator.js", "GET")]
+    [Unauthenticated]
+    public class GetBangumiEpisodeScript { }
+
+    [Route("/Bangumi/Ui/Options", "GET")]
+    [Authenticated]
+    public class GetBangumiUiOptions : IReturn<BangumiUiOptions> { }
+
+    public class BangumiUiOptions
+    {
+        public bool EpisodeNavigator { get; set; }
+    }
     /// <summary>
     /// Relays a bgm.tv image through the server. The browser has no proxy configured while the
     /// plugin does, and lain.bgm.tv is not reachable from every network that can reach Emby.
@@ -131,6 +144,17 @@ namespace Emby.Plugins.Bangumi.Web
         public object Get(GetBangumiUiStyle request)
         {
             return StaticAsset("bangumi-ui.css", "text/css; charset=utf-8");
+        }
+
+        public object Get(GetBangumiEpisodeScript request)
+        {
+            return StaticAsset("episode-navigator.js", "application/javascript; charset=utf-8");
+        }
+
+        public object Get(GetBangumiUiOptions request)
+        {
+            var options = Plugin.Instance?.Options ?? new PluginOptions();
+            return new BangumiUiOptions { EpisodeNavigator = options.EnableBangumiUi && options.UiEpisodeNavigator };
         }
         public async Task<object> Get(GetBangumiUiImage request)
         {

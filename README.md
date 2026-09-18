@@ -107,6 +107,9 @@ TMDB 和 TheTVDB 把一部番的所有季塞进同一个条目的 `Season 1..N`�
   各占独立栏位，点角色 / 声优弹出详情（头像、中日文名、简介、别名、infobox）。
   数据直接来自 Bangumi，不写进 Emby 媒体库，所以 150 个角色也不会污染演员表。见
   「[条目页面（Bangumi UI）](#条目页面bangumi-ui)」。
+- **增强选集面板**：剧集 / 季 / 分集页面将原生选集替换为可切换的**封面卡片**与**数字网格**；按集号跳转、
+  回到续看进度、按季记忆浏览位置。分集仍打开 Emby 原生详情页，因此版本、音轨、字幕和外部播放器链路保持不变。
+  只读取本机 Emby 的分集数据，不需要 Bangumi 匹配或额外网络请求。
 
 ## 安装
 
@@ -276,7 +279,7 @@ Emby 原生条目页只有一个「演职人员」区块：`item.js` 直接拿 `
 
 1. 插件把 Bangumi 的条目 / 角色 / 人员 / 关联条目聚合成一个 JSON 端点；
 2. 前端 JS 与 CSS 作为**嵌入资源**打进同一个 `Emby.Plugins.Bangumi.dll`，由插件自己以静态资源提供；
-3. 插件启动时把**一行** `<script>` 幂等写进 `index.html`，脚本在条目页把栏位插到原生「演职人员」之前。
+3. 插件启动时把**一行** `<script>` 幂等写进 `index.html`，脚本在条目页把 Bangumi 栏位与增强选集插到各自原生区域之前。
 
 角色数据**不写进 Emby 媒体库**——150 个角色只存在于这个页面，不会挤爆演员表、不会生成
 上百个 `Person` 行、也不影响「补全人物元数据」任务的规模。
@@ -421,6 +424,7 @@ Info Bangumi: Bangumi UI prewarm: 「Smile 光之美少女」(subject 27332) 预
 | 选项 | 默认值 | 说明 |
 |---|---|---|
 | 启用条目页面增强 | 开 | 关掉后端点返回空载荷、前端静默退出，不必拆掉注入 |
+| 增强选集面板 | 开 | 封面 / 数字视图自由切换，按集号跳转、回到续看进度；浏览位置按浏览器、Emby 服务器和用户隔离保存。关闭即保留原生选集。分集卡片只打开原生详情页，版本、字幕和播放方式不受影响 |
 | 角色按关系分栏 | 开 | 主角 / 配角 / 客串各自一栏；关掉则合成一栏 |
 | 显示声优栏 | 开 | 副行是该声优在本作所配的角色 |
 | 显示制作人员栏 | 开 | 按职位分组的两列表（原作 / 导演 / 系列构成 / 脚本 / 分镜 / 演出 / 作画监督 / 原画…）|
@@ -447,8 +451,8 @@ Info Bangumi: Bangumi UI prewarm: 「Smile 光之美少女」(subject 27332) 预
 
 ### 已知限制
 
-- 依赖 `.peopleSection` 这个 class 定位插入点。Emby 前端改版会让它失效（页面只是少一块，
-  不会报错）。
+- 角色 / 制作栏依赖 `.peopleSection`，选集依赖 `.seriesItemsSection`、`.trackListSection` 或
+  `.moreFromSeasonSection` 定位插入点。Emby 前端改版会让对应增强失效（原生页面仍保留，不会报错）。
 - Emby 会**覆写插件设置的 `Cache-Control`**，实际返回 `no-store`，所以图片代理的浏览器
   缓存没生效，每次进页面都会重新走代理。功能无影响。
 - 卡片副行（角色的 CV、声优所配角色）超过 3 行会截断，完整内容在 `title` 与 `aria-label` 里。
@@ -920,6 +924,7 @@ src/Emby.Plugins.Bangumi/
 │   ├── BangumiUiInjector.cs   index.html 幂等注入 / 自愈 / 备份 / 原子写
 │   └── Assets/
 │       ├── bangumi-ui.js      单 IIFE / ES5，只依赖 window.ApiClient
+│       ├── episode-navigator.js  本机分集数据的增强选集面板
 │       └── bangumi-ui.css     尺寸全 em、颜色 inherit + 半透明叠加，跟随任意主题
 └── Providers/
     ├── BangumiProviderBase.cs      搜索、打分、字段映射的共享逻辑
@@ -933,7 +938,7 @@ src/Emby.Plugins.Bangumi/
     └── BangumiExternalId.cs
 ```
 
-`Web/Assets/` 下的两个文件通过 `csproj` 的 `<EmbeddedResource>` 打进 DLL，改完必须**重新构建**
+`Web/Assets/` 下的三个文件通过 `csproj` 的 `<EmbeddedResource>` 打进 DLL，改完必须**重新构建**
 才会生效（不是磁盘文件，改 `dashboard-ui` 下的东西没用）。前端刻意写成 ES5 单 IIFE、
 不引任何库、CSS 不写死颜色，这样在 emby-fluent 之类的第三方主题下也能跟着变。
 调试钩子：`window.BangumiUi.refresh()` / `.clearCache()`，`window.BangumiUiDebug = true` 开日志。

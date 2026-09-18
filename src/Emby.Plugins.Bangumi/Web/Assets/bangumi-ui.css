@@ -20,6 +20,92 @@
     display: none !important;
 }
 
+/* Episode navigation: restrained controls, native typography and artwork remain the focus. */
+.bgmui-episodesReplaced { display: none !important; }
+.bgmui-episodes {
+    --ep-line: rgba(150, 150, 150, .24);
+    --ep-surface: rgba(125, 125, 125, .12);
+    --ep-accent: #83cba7;
+    color: inherit;
+    margin-block: 1em 2em;
+    box-sizing: border-box;
+    min-width: 0;
+}
+.bgmui-episodes *, .bgmui-episodes *::before, .bgmui-episodes *::after { box-sizing: border-box; }
+.bgmui-epHeading, .bgmui-epHeadingText, .bgmui-epToolbar, .bgmui-epRanges,
+.bgmui-epActions, .bgmui-epModes, .bgmui-epJump, .bgmui-epFoot {
+    display: flex;
+    align-items: center;
+    gap: .6em;
+}
+.bgmui-epHeading { justify-content: space-between; gap: 1em; margin-bottom: .85em; }
+.bgmui-epHeadingText { flex-wrap: wrap; gap: .8em; }
+.bgmui-epHeading .sectionTitle { margin: 0 !important; font-size: 1.4em; }
+.bgmui-epCount { opacity: .62; font-size: .84em; }
+.bgmui-epModes { border: 1px solid var(--ep-line); border-radius: .65em; padding: .2em; gap: .15em; flex-shrink: 0; }
+.bgmui-episodes .bgmui-epButton, .bgmui-episodes .bgmui-epSelect, .bgmui-episodes .bgmui-epInput {
+    color: inherit;
+    font: inherit;
+    font-size: .85em;
+    line-height: 1.35;
+    border: 1px solid transparent;
+    background: transparent;
+    border-radius: .5em;
+    margin: 0;
+    min-height: 2.55em;
+    padding: .5em .85em;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}
+.bgmui-episodes .bgmui-epButton { cursor: pointer; white-space: nowrap; }
+.bgmui-episodes .bgmui-epButton:hover:not(:disabled) { background: rgba(150, 150, 150, .22); }
+.bgmui-episodes .bgmui-epButton[aria-pressed="true"] { background: rgba(160, 160, 160, .24); box-shadow: 0 1px 4px #0002; }
+.bgmui-epToolbar { justify-content: space-between; flex-wrap: wrap; gap: .65em 1em; margin-bottom: 1em; }
+.bgmui-epRanges, .bgmui-epActions { flex-wrap: wrap; gap: .4em; }
+.bgmui-episodes .bgmui-epSelect { border-color: var(--ep-line); background: var(--ep-surface); cursor: pointer; max-width: min(19em, 70vw); }
+.bgmui-epSelect option { color: #222; background: #f5f5f5; }
+.bgmui-episodes .bgmui-epArrow { font-size: 1.1em; padding: .15em .55em; min-height: 2em; }
+.bgmui-episodes .bgmui-epArrow:disabled { opacity: .25; cursor: default; }
+.bgmui-episodes .bgmui-epResume { border-color: var(--ep-line); }
+.bgmui-episodes .bgmui-epJump { margin: 0; padding: 0; border: 1px solid var(--ep-line); border-radius: .5em; gap: 0; }
+.bgmui-episodes .bgmui-epInput { width: 4.6em; outline: none; min-width: 0; }
+.bgmui-epInput::placeholder { color: inherit; opacity: .5; }
+.bgmui-epInput[aria-invalid="true"] { box-shadow: inset 0 0 0 1px #e69175; }
+.bgmui-epMessage { font-size: .85em; color: #edaf90; }
+.bgmui-epMessage:not(:empty) { margin-bottom: .8em; }
+.bgmui-epGrid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1.2em 1em; }
+.bgmui-episodes .bgmui-epCard { display: block; color: inherit; text-decoration: none; min-width: 0; border-radius: .65em; }
+.bgmui-epVisual { position: relative; aspect-ratio: 16 / 9; border-radius: .6em; overflow: hidden; background: linear-gradient(135deg, #7772, #3335); transition: box-shadow 140ms ease; }
+.bgmui-epImage { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.bgmui-epImage.is-poster { object-fit: contain; }
+.bgmui-epNumber { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 1.6em; font-variant-numeric: tabular-nums; opacity: .7; }
+.bgmui-epCard.is-selected .bgmui-epVisual { box-shadow: 0 0 0 2px var(--ep-accent); }
+.bgmui-epCard:hover .bgmui-epVisual { box-shadow: 0 0 0 2px currentColor; }
+.bgmui-epEnter { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: #0004; color: white; font-size: 2em; opacity: 0; transition: opacity 140ms ease; }
+.bgmui-epCard:hover .bgmui-epEnter, .bgmui-epCard:focus-visible .bgmui-epEnter { opacity: 1; }
+.bgmui-epWatched { position: absolute; right: .45em; top: .45em; width: 1.55em; height: 1.55em; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #49a963; color: #fff; font-size: .8em; font-weight: 700; box-shadow: 0 1px 4px #0003; }
+.bgmui-epProgress { position: absolute; bottom: 0; left: 0; height: .22em; background: var(--ep-accent); }
+.bgmui-epName { margin-top: .5em; font-size: .88em; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; min-height: 2.8em; }
+.bgmui-epMeta { font-size: .77em; opacity: .58; margin-top: .15em; line-height: 1.45; }
+.bgmui-epFoot { justify-content: space-between; font-size: .74em; opacity: .5; margin-top: 1.1em; }
+.bgmui-episodes[data-mode="numbers"] .bgmui-epGrid { grid-template-columns: repeat(auto-fill, minmax(3.6em, 1fr)); gap: .55em; }
+.bgmui-episodes[data-mode="numbers"] .bgmui-epVisual { aspect-ratio: auto; height: 3.1em; border: 1px solid var(--ep-line); background: var(--ep-surface); }
+.bgmui-episodes[data-mode="numbers"] .bgmui-epNumber { font-size: 1em; opacity: .9; }
+.bgmui-episodes[data-mode="numbers"] .is-watched .bgmui-epVisual { background: rgba(75, 166, 111, .12); }
+.bgmui-episodes[data-mode="numbers"] .bgmui-epWatched { width: auto; height: auto; font-size: .65em; right: .35em; top: .1em; color: var(--ep-accent); background: none; box-shadow: none; }
+.bgmui-episodes[data-mode="numbers"] .bgmui-epName, .bgmui-episodes[data-mode="numbers"] .bgmui-epMeta { display: none; }
+.bgmui-episodes :is(a, button, select, input):focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+@media (max-width: 1550px) { .bgmui-epGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 1000px) { .bgmui-epGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 600px) {
+    .bgmui-epGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1em .7em; }
+    .bgmui-epHeadingText { gap: .25em; flex-direction: column; align-items: flex-start; }
+    .bgmui-epToolbar { align-items: flex-start; }
+    .bgmui-epActions { width: 100%; justify-content: space-between; }
+    .bgmui-epCount { font-size: .75em; }
+    .bgmui-epName { font-size: .82em; }
+}
+@media (prefers-reduced-motion: reduce) { .bgmui-episodes * { transition: none !important; } }
+
 /* ---------------------------------------------------------------- 标题 */
 
 .bgmui-title {

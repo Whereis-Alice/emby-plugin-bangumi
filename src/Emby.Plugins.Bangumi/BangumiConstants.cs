@@ -41,7 +41,7 @@ namespace Emby.Plugins.Bangumi
         /// and asks third-party clients to identify themselves with a repository URL.
         /// </summary>
         public const string DefaultUserAgent =
-            "Whereis-Alice/emby-plugin-bangumi/1.1.0 (Emby metadata provider; +https://github.com/Whereis-Alice/emby-plugin-bangumi)";
+            "Whereis-Alice/emby-plugin-bangumi/1.2.0 (Emby metadata provider; +https://github.com/Whereis-Alice/emby-plugin-bangumi)";
 
         /// <summary>
         /// meta_tags entries that describe the release platform, the production country or the source

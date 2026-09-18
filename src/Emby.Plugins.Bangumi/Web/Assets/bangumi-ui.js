@@ -10,7 +10,7 @@
 //
 // Ground rules, because this code lives inside a page it does not own:
 //   * never throw into Emby - every entry point is wrapped
-//   * never touch existing nodes except to toggle one class on the native people section
+//   * never touch existing nodes except to toggle one class on native people / episode sections
 //   * no dependency on Emby internals beyond window.ApiClient and a handful of CSS class
 //     names used for typography, so a server upgrade degrades to plain styling at worst
 
@@ -692,6 +692,14 @@
     }
 
     function start() {
+        // Episode browsing only needs Emby's local data, never the slower Bangumi detail payload.
+        ensureStyle();
+        if (!document.getElementById("bgmuiEpisodeScript")) {
+            var episodes = document.createElement("script");
+            episodes.id = "bgmuiEpisodeScript";
+            episodes.src = window.ApiClient.getUrl("Bangumi/Ui/episode-navigator.js");
+            document.head.appendChild(episodes);
+        }
         window.addEventListener("hashchange", schedule);
         document.addEventListener("viewshow", schedule, true);
 

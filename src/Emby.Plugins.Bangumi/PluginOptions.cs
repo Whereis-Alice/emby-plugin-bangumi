@@ -220,6 +220,10 @@ namespace Emby.Plugins.Bangumi
         [Description("Emby 自带的「演职人员」把角色、声优和制作人员挤在同一排卡片里，Person 模型也存不下「谁配了谁」——它的 PersonType 只有 8 种，没有「角色」，前端拿到的 People 每项更是只有 Name / Id / Role / Type / PrimaryImageTag，连 ProviderIds 都没有，纯 CSS 或换主题都分不开。打开此项后插件自己开一个接口 /emby/Bangumi/Items/{id}/Detail，把 Bangumi 原样的数据交给注入的脚本，另起「角色」「声优」「制作人员（按职位分组）」等栏位。浏览器侧只需要 dashboard-ui/index.html 里的一行 script 引用，插件启动时会自动补上，见下面的「自动注入前端脚本」。")]
         public bool EnableBangumiUi { get; set; } = true;
 
+        [DisplayName("增强选集面板")]
+        [Description("以可切换的封面卡片 / 数字网格展示 Emby 分集，支持按集号跳转、定位观看进度，并在当前浏览器按服务器和用户记住浏览位置。关闭后使用原生选集。需要启用前端脚本注入；选集数据不依赖 Bangumi 匹配或网络。")]
+        public bool UiEpisodeNavigator { get; set; } = true;
+
         [DisplayName("自动注入前端脚本")]
         [Description("Emby 没有给插件提供向 web 客户端追加脚本的接口（品牌设置里那一栏只吃 CSS），所以浏览器侧必须靠 dashboard-ui/index.html 里的一行引用。插件每次随服务器启动时检查这一行，缺了就补上：改动前会把原文件复制成 index.html.bangumi-bak-<时间戳>（备份写不出去就放弃改动，且任何备份都不会被删）。Emby 升级会覆盖 index.html，下次启动同样会自动补回，所以正常情况下不需要手动运行 scripts/inject-ui.ps1。关掉上面的「独立的角色 / 制作栏」时这一行也会被自动移除。目录只读（某些容器部署）或结构对不上时只记一条警告，刮削功能不受影响。")]
         public bool UiAutoInjectScript { get; set; } = true;
