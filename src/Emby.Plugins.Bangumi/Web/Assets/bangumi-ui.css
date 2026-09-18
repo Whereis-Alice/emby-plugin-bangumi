@@ -284,6 +284,7 @@
     overflow: hidden;
     cursor: pointer;
     text-align: center;
+    margin-top: min(.74em, max(.38em, 1.06vw));
     transition: transform 120ms ease-out, background-color 120ms ease-out;
 }
 
@@ -855,6 +856,7 @@
         transition: none;
     }
 }
+
 
 
 
