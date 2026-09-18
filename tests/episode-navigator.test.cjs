@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const nav = require('../src/Emby.Plugins.Bangumi/Web/Assets/episode-navigator.js');
+const navigatorSource = fs.readFileSync(require.resolve('../src/Emby.Plugins.Bangumi/Web/Assets/episode-navigator.js'), 'utf8');
 const episode = (n, user = {}, extra = {}) => ({ Id: String(n), Type: 'Episode', IndexNumber: n, UserData: user, ...extra });
 
 test('Fresh: old unmarked episodes do not pull progress back to episode 1', () => {
@@ -61,4 +63,17 @@ test('normalization excludes virtual placeholders, retains numbering and sorts n
 test('all watched does not jump back to the first episode; empty list is safe', () => {
     assert.equal(nav.recommendation([episode(1, { Played: true }), episode(2, { Played: true })]).Id, '2');
     assert.equal(nav.recommendation([]), null);
+});
+
+test('episode cards use Emby playback actions for one-click playback', () => {
+    assert.match(navigatorSource, /Emby\.importModule\("\.\/modules\/common\/playback\/playbackactions\.js"\)/);
+    assert.match(navigatorSource, /actions\.default\.play\(\{ items: \[playbackItem\(ctx, item\)\], fullscreen: true \}\)/);
+    assert.match(navigatorSource, /node\("article", "bgmui-epCard/);
+    assert.match(navigatorSource, /e\.preventDefault\(\); e\.stopPropagation\(\); playEpisode\(ctx, item, link\)/);
+});
+
+test('episode details remain a separate native route', () => {
+    assert.match(navigatorSource, /var details = node\("a", "bgmui-epDetails", "详情"\)/);
+    assert.match(navigatorSource, /details\.href = itemHref\(ctx, item\)/);
+    assert.match(navigatorSource, /details\.addEventListener\("click", function \(e\) \{ e\.stopPropagation\(\); \}\)/);
 });

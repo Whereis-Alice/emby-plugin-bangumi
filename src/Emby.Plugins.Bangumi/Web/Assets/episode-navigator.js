@@ -202,6 +202,32 @@
     function itemHref(ctx, item) {
         return "#!/item?id=" + encodeURIComponent(item.Id) + "&serverId=" + encodeURIComponent(ctx.api.serverId());
     }
+    function playbackItem(ctx, item) {
+        return Object.assign({}, item, {
+            ServerId: item.ServerId || ctx.api.serverId(),
+            MediaType: item.MediaType || "Video"
+        });
+    }
+    function trackSelection(ctx, item, card) {
+        ctx.selected = item.Id;
+        ctx.root.querySelectorAll(".bgmui-epCard.is-selected").forEach(function (e) {
+            e.classList.remove("is-selected"); e.removeAttribute("aria-current");
+        });
+        card.classList.add("is-selected"); card.setAttribute("aria-current", "true");
+        remember(ctx);
+    }
+    function playEpisode(ctx, item, card) {
+        if (ctx.playing) return;
+        ctx.playing = true;
+        trackSelection(ctx, item, card);
+        Emby.importModule("./modules/common/playback/playbackactions.js").then(function (actions) {
+            return actions.default.play({ items: [playbackItem(ctx, item)], fullscreen: true });
+        }).catch(function (err) {
+            if (window.BangumiUiDebug) console.warn("[bangumi-episodes] playback failed", err);
+        }).then(function () {
+            window.setTimeout(function () { ctx.playing = false; }, 500);
+        });
+    }
     function imageFor(ctx, item) {
         var tags = item.ImageTags || {}, id = item.Id, tag = tags.Primary;
         var poster = item.PrimaryImageAspectRatio > 0 && item.PrimaryImageAspectRatio < 1.2;
@@ -215,14 +241,14 @@
     }
     function card(ctx, item) {
         var u = item.UserData || {}, current = item.Id === ctx.selected;
-        var link = node("a", "bgmui-epCard" + (current ? " is-selected" : "") + (u.Played ? " is-watched" : ""));
-        link.href = itemHref(ctx, item);
+        var link = node("article", "bgmui-epCard" + (current ? " is-selected" : "") + (u.Played ? " is-watched" : ""));
         link.dataset.episode = item.Id;
+        link.tabIndex = 0;
         if (current) link.setAttribute("aria-current", "true");
         var status = u.Played ? "已看" : u.PlaybackPositionTicks > 0 ? "观看中" : "未看";
         var name = labelOf(item) + ". " + item.Name;
         link.title = name + " · " + status;
-        link.setAttribute("aria-label", name + "，" + status + "，打开分集详情");
+        link.setAttribute("aria-label", name + "，" + status + "，播放分集");
         var visual = node("div", "bgmui-epVisual");
         var numeric = node("span", "bgmui-epNumber", labelOf(item));
         visual.appendChild(numeric);
@@ -234,7 +260,7 @@
                 img.addEventListener("error", function () { img.remove(); });
                 visual.appendChild(img);
             }
-            var enter = node("span", "bgmui-epEnter", "↗");
+            var enter = node("span", "bgmui-epEnter", "▶");
             enter.setAttribute("aria-hidden", "true");
             visual.appendChild(enter);
         }
@@ -248,6 +274,12 @@
             bar.style.width = Math.min(100, u.PlaybackPositionTicks / item.RunTimeTicks * 100) + "%";
             visual.appendChild(bar);
         }
+        var details = node("a", "bgmui-epDetails", "详情");
+        details.href = itemHref(ctx, item);
+        details.title = "打开分集详情，可选择版本、音轨和字幕";
+        details.setAttribute("aria-label", name + "：打开详情");
+        details.addEventListener("click", function (e) { e.stopPropagation(); });
+        visual.appendChild(details);
         link.appendChild(visual);
         var title = node("div", "bgmui-epName", name);
         link.appendChild(title);
@@ -255,16 +287,16 @@
         if (/^\d{4}-\d{2}-\d{2}$/.test(date)) facts.push(date.replace(/-/g, "/"));
         if (item.RunTimeTicks > 0) facts.push(Math.round(item.RunTimeTicks / 600000000) + " 分钟");
         link.appendChild(node("div", "bgmui-epMeta", facts.join(" · ")));
-        function track() {
-            ctx.selected = item.Id;
-            ctx.root.querySelectorAll(".bgmui-epCard.is-selected").forEach(function (e) {
-                e.classList.remove("is-selected"); e.removeAttribute("aria-current");
-            });
-            link.classList.add("is-selected"); link.setAttribute("aria-current", "true");
-            remember(ctx);
-        }
-        link.addEventListener("click", track);
-        link.addEventListener("focus", track);
+        link.addEventListener("click", function (e) {
+            if (e.target.closest(".bgmui-epDetails")) return;
+            e.preventDefault(); e.stopPropagation(); playEpisode(ctx, item, link);
+        });
+        link.addEventListener("keydown", function (e) {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            if (e.target.closest(".bgmui-epDetails")) return;
+            e.preventDefault(); e.stopPropagation(); playEpisode(ctx, item, link);
+        });
+        link.addEventListener("focus", function () { trackSelection(ctx, item, link); });
         return link;
     }
     function render(ctx, focus) {
