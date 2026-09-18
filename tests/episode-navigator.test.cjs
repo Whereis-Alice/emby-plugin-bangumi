@@ -95,6 +95,7 @@ test('episode cards expose a one-click watched toggle without hijacking playback
     assert.match(navigatorSource, /ctx\.api\.markPlayed/);
     assert.match(navigatorSource, /快速标记为已看/);
     assert.match(navigatorSource, /e\.preventDefault\(\); e\.stopPropagation\(\); markPlayed\(ctx, item, link, check\)/);
+    assert.match(navigatorSource, /\.bgmui-epDetails, \.bgmui-epWatchedToggle/);
 });
 
 test('episode range and season pickers use a translucent custom menu', () => {

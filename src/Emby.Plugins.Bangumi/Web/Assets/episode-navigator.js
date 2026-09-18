@@ -395,12 +395,12 @@
         if (item.RunTimeTicks > 0) facts.push(Math.round(item.RunTimeTicks / 600000000) + " 分钟");
         link.appendChild(node("div", "bgmui-epMeta", facts.join(" · ")));
         link.addEventListener("click", function (e) {
-            if (e.target.closest(".bgmui-epDetails")) return;
+            if (e.target.closest(".bgmui-epDetails, .bgmui-epWatchedToggle")) return;
             e.preventDefault(); e.stopPropagation(); playEpisode(ctx, item, link);
         });
         link.addEventListener("keydown", function (e) {
             if (e.key !== "Enter" && e.key !== " ") return;
-            if (e.target.closest(".bgmui-epDetails")) return;
+            if (e.target.closest(".bgmui-epDetails, .bgmui-epWatchedToggle")) return;
             e.preventDefault(); e.stopPropagation(); playEpisode(ctx, item, link);
         });
         link.addEventListener("focus", function () { trackSelection(ctx, item, link); });
