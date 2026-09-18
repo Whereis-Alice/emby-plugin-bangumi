@@ -243,6 +243,125 @@
     background: transparent;
 }
 
+/* ---------------------------------------------------------------- 首页最近观看 */
+
+.bgmui-homeRecent {
+    margin-bottom: 1.35em;
+}
+
+.bgmui-homeRecentRow {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 1em;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+}
+
+.bgmui-homeRecentRow::-webkit-scrollbar {
+    height: .45em;
+}
+
+.bgmui-homeRecentRow::-webkit-scrollbar-thumb {
+    background: rgba(127, 127, 127, .42);
+    border-radius: .25em;
+}
+
+.bgmui-homeRecentRow::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.bgmui-homeRecentCard {
+    position: relative;
+    flex: 0 0 min(18em, 28vw);
+    min-width: 13em;
+    color: inherit;
+    text-decoration: none;
+    border-radius: .55em;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform 120ms ease-out, background-color 120ms ease-out;
+}
+
+.bgmui-homeRecentCard:hover,
+.bgmui-homeRecentCard:focus-visible {
+    transform: translateY(-.12em);
+}
+
+.bgmui-homeRecentImage {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    border-radius: .55em;
+    background: linear-gradient(135deg, rgba(127, 127, 127, .25), rgba(35, 35, 35, .5));
+    box-shadow: 0 1px 5px rgba(0, 0, 0, .22);
+}
+
+.bgmui-homeRecentImage.is-empty::after {
+    content: "最近观看";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: .52;
+    font-size: .9em;
+}
+
+.bgmui-homeRecentImage img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.bgmui-homeRecentBadge {
+    position: absolute;
+    right: .45em;
+    top: .45em;
+    width: 1.55em;
+    height: 1.55em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: #49a963;
+    color: #fff;
+    font-size: .78em;
+    font-weight: 700;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
+}
+
+.bgmui-homeRecentName {
+    margin-top: .48em;
+    overflow: hidden;
+    font-size: .9em;
+    font-weight: 600;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bgmui-homeRecentMeta {
+    margin-top: .16em;
+    overflow: hidden;
+    opacity: .62;
+    font-size: .78em;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+    .bgmui-homeRecentCard {
+        flex-basis: min(15em, 68vw);
+        min-width: 11em;
+    }
+}
+
 /* ---------------------------------------------------------------- 卡片 */
 
 .bgmui-card {

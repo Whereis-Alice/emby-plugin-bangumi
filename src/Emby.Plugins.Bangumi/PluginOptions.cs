@@ -217,7 +217,7 @@ namespace Emby.Plugins.Bangumi
         // ---------- 条目页面（Bangumi UI） ----------
 
         [DisplayName("独立的角色 / 制作栏")]
-        [Description("Emby 自带的「演职人员」把角色、声优和制作人员挤在同一排卡片里，Person 模型也存不下「谁配了谁」——它的 PersonType 只有 8 种，没有「角色」，前端拿到的 People 每项更是只有 Name / Id / Role / Type / PrimaryImageTag，连 ProviderIds 都没有，纯 CSS 或换主题都分不开。打开此项后插件自己开一个接口 /emby/Bangumi/Items/{id}/Detail，把 Bangumi 原样的数据交给注入的脚本，另起「角色」「声优」「制作人员（按职位分组）」等栏位。浏览器侧只需要 dashboard-ui/index.html 里的一行 script 引用，插件启动时会自动补上，见下面的「自动注入前端脚本」。")]
+        [Description("Emby 自带的「演职人员」把角色、声优和制作人员挤在同一排卡片里，Person 模型也存不下「谁配了谁」——它的 PersonType 只有 8 种，没有「角色」，前端拿到的 People 每项更是只有 Name / Id / Role / Type / PrimaryImageTag，连 ProviderIds 都没有，纯 CSS 或换主题都分不开。打开此项后插件自己开一个接口 /emby/Bangumi/Items/{id}/Detail，把 Bangumi 原样的数据交给注入的脚本，另起「角色」「声优」「制作人员（按职位分组）」等栏位，并在首页增加按最后播放时间排序的「最近观看」。浏览器侧只需要 dashboard-ui/index.html 里的一行 script 引用，插件启动时会自动补上，见下面的「自动注入前端脚本」。")]
         public bool EnableBangumiUi { get; set; } = true;
 
         [DisplayName("增强选集面板")]

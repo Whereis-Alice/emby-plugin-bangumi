@@ -104,3 +104,13 @@ test('episode range and season pickers use a translucent custom menu', () => {
     const css = fs.readFileSync(require.resolve('../src/Emby.Plugins.Bangumi/Web/Assets/bangumi-ui.css'), 'utf8');
     assert.match(css, /backdrop-filter:\s*blur\(18px\)/);
 });
+
+test('home page adds a recently watched section from Emby played-item ordering', () => {
+    const ui = fs.readFileSync(require.resolve('../src/Emby.Plugins.Bangumi/Web/Assets/bangumi-ui.js'), 'utf8');
+    assert.match(ui, /function runRecentHome\(\)/);
+    assert.match(ui, /IncludeItemTypes: "Episode,Movie"/);
+    assert.match(ui, /Filters: "IsPlayed"/);
+    assert.match(ui, /SortBy: "DatePlayed"/);
+    assert.match(ui, /最近观看/);
+    assert.match(ui, /bgmui-homeRecent/);
+});

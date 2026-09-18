@@ -25,6 +25,10 @@
     var inFlight = {};
     var entityCache = {};
     var scheduleTimer = null;
+    var recentHomeInFlight = null;
+    var recentHomeCache = null;
+    var recentHomeCacheAt = 0;
+    var recentHomeToken = 0;
 
     // A cold subject costs one Bangumi request per character, so a render can still be in
     // flight when the user opens the next show. Every run takes a token and drops its own
@@ -214,6 +218,143 @@
 
     function cardRow() {
         return el("div", "bgmui-row padded-left padded-left-page padded-right");
+    }
+
+    // ---------------------------------------------------------------- home: recently watched
+
+    function visibleHome() {
+        var containers = document.querySelectorAll(".homeSectionsContainer");
+        for (var i = containers.length - 1; i >= 0; i--) {
+            if (!containers[i].closest(".hide") && containers[i].getClientRects().length) {
+                return containers[i];
+            }
+        }
+        return null;
+    }
+
+    function recentHomeQuery() {
+        var api = window.ApiClient;
+        var userId = api && api.getCurrentUserId && api.getCurrentUserId();
+        if (!api || !api.getJSON || !api.getUrl || !userId) return Promise.resolve(null);
+
+        var params = {
+            Recursive: true,
+            IncludeItemTypes: "Episode,Movie",
+            Filters: "IsPlayed",
+            SortBy: "DatePlayed",
+            SortOrder: "Descending",
+            Limit: 12,
+            Fields: "PrimaryImageAspectRatio,SeriesName,SeriesId,ParentIndexNumber,IndexNumber,UserData",
+            EnableUserData: true,
+            ImageTypeLimit: 1
+        };
+
+        var url = api.getUrl("Users/" + encodeURIComponent(userId) + "/Items", params);
+        return api.getJSON(url).then(function (data) {
+            return data && Array.isArray(data.Items) ? data.Items : [];
+        }, function (err) {
+            log("recent home request failed", err);
+            return [];
+        });
+    }
+
+    function recentHomeImage(item) {
+        var tags = item.ImageTags || {};
+        if (!tags.Primary || !window.ApiClient || !window.ApiClient.getImageUrl) return null;
+
+        try {
+            return window.ApiClient.getImageUrl(item.Id, {
+                type: "Primary",
+                tag: tags.Primary,
+                maxWidth: 720,
+                quality: 90
+            });
+        } catch (err) {
+            return null;
+        }
+    }
+
+    function recentHomeCard(item) {
+        var link = el("a", "bgmui-homeRecentCard");
+        link.href = "#!/item?id=" + encodeURIComponent(item.Id) +
+            "&serverId=" + encodeURIComponent(window.ApiClient.serverId());
+
+        var image = el("div", "bgmui-homeRecentImage");
+        var url = recentHomeImage(item);
+        if (url) {
+            var img = el("img");
+            img.alt = "";
+            img.loading = "lazy";
+            img.decoding = "async";
+            img.src = url;
+            img.addEventListener("error", function () { img.remove(); image.classList.add("is-empty"); });
+            image.appendChild(img);
+        } else {
+            image.classList.add("is-empty");
+        }
+
+        var badge = el("span", "bgmui-homeRecentBadge", "✓");
+        badge.title = "已看";
+        image.appendChild(badge);
+        link.appendChild(image);
+
+        var series = firstText(item.SeriesName, item.Name, "未命名");
+        var title = item.Type === "Episode" && item.Name && item.SeriesName && item.Name !== item.SeriesName
+            ? "S" + (item.ParentIndexNumber == null ? 1 : item.ParentIndexNumber) +
+                ":E" + (item.IndexNumber == null ? "?" : item.IndexNumber) + " · " + item.Name
+            : item.Name || series;
+        link.appendChild(el("div", "bgmui-homeRecentName", series));
+        link.appendChild(el("div", "bgmui-homeRecentMeta", title));
+        link.title = series + " · " + title;
+        link.setAttribute("aria-label", "最近观看：" + series + "，" + title);
+        return link;
+    }
+
+    function renderRecentHome(home, items) {
+        var old = home.querySelector(".bgmui-homeRecent");
+        if (old) old.remove();
+        home.removeAttribute("data-bangumi-recent");
+        if (!items || !items.length) return;
+
+        var wrapper = el("div", "verticalSection verticalSection-cards emby-scrollbuttons-scroller bgmui-homeRecent");
+        var heading = el("div", "sectionTitleContainer flex align-items-center flex-wrap-wrap sectionTitleContainer-cards padded-left padded-left-page padded-right");
+        heading.appendChild(el("h2", "sectionTitle sectionTitle-cards", "最近观看"));
+        wrapper.appendChild(heading);
+
+        var row = el("div", "bgmui-homeRecentRow padded-top-focusscale padded-bottom-focusscale padded-left padded-left-page padded-right");
+        items.forEach(function (item) { row.appendChild(recentHomeCard(item)); });
+        wrapper.appendChild(row);
+
+        var resumeHeading = Array.prototype.slice.call(home.querySelectorAll("h2"))
+            .filter(function (headingNode) { return headingNode.textContent.trim() === "继续观看"; })[0];
+        var resume = resumeHeading && resumeHeading.closest(".verticalSection");
+        var slider = home.querySelector(".scrollSlider.verticalSections");
+        if (resume && resume.parentNode) resume.parentNode.insertBefore(wrapper, resume.nextSibling);
+        else if (slider) slider.appendChild(wrapper);
+        else return;
+
+        home.setAttribute("data-bangumi-recent", "1");
+    }
+
+    function runRecentHome() {
+        var home = visibleHome();
+        if (!home) return;
+
+        var now = Date.now();
+        if (home.getAttribute("data-bangumi-recent") === "1" && now - recentHomeCacheAt < 30000) return;
+        if (recentHomeInFlight) return;
+
+        var token = ++recentHomeToken;
+        recentHomeInFlight = recentHomeQuery().then(function (items) {
+            recentHomeInFlight = null;
+            if (token !== recentHomeToken) return;
+            recentHomeCache = items || [];
+            recentHomeCacheAt = Date.now();
+            var current = visibleHome();
+            if (current) renderRecentHome(current, recentHomeCache);
+        }, function () {
+            recentHomeInFlight = null;
+        });
     }
 
     function card(kind, id, posterUrl, primary, secondary, layout) {
@@ -621,7 +762,10 @@
 
     function run() {
         var itemId = currentItemId();
-        if (!itemId) return;
+        if (!itemId) {
+            runRecentHome();
+            return;
+        }
 
         var target = findTarget();
         if (!target) return;
