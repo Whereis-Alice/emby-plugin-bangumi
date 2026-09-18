@@ -14,6 +14,17 @@ test('resume unfinished episode; ignore residual position on an already watched 
         episode(32, { Played: true }), episode(33, { PlaybackPositionTicks: 80 })];
     assert.equal(nav.recommendation(items).Id, '33');
 });
+test('stale unfinished position does not override later watched episodes', () => {
+    const items = [
+        episode(33, { PlaybackPositionTicks: 1330000000, LastPlayedDate: '2026-09-17T23:54:55Z' }),
+        episode(34), episode(35), episode(36),
+        episode(37, { Played: true, LastPlayedDate: '2026-09-18T03:34:02Z' }),
+        episode(38, { Played: true, LastPlayedDate: '2026-09-18T08:59:59Z' }),
+        episode(39, { Played: true, LastPlayedDate: '2026-09-18T08:57:27Z' }),
+        episode(40)
+    ];
+    assert.equal(nav.recommendation(items).IndexNumber, 40);
+});
 test('most recent unfinished replay wins over older unfinished episodes', () => {
     const items = [episode(8, { PlaybackPositionTicks: 80, LastPlayedDate: '2026-09-18T12:00:00Z' }),
         episode(33, { PlaybackPositionTicks: 90, LastPlayedDate: '2026-09-17T12:00:00Z' })];
@@ -77,4 +88,18 @@ test('episode details remain a separate native route', () => {
     assert.match(navigatorSource, /var details = node\("a", "bgmui-epDetails", "详情"\)/);
     assert.match(navigatorSource, /details\.href = itemHref\(ctx, item\)/);
     assert.match(navigatorSource, /details\.addEventListener\("click", function \(e\) \{ e\.stopPropagation\(\); \}\)/);
+});
+
+test('episode cards expose a one-click watched toggle without hijacking playback', () => {
+    assert.match(navigatorSource, /function markPlayed\(ctx, item, card, mark\)/);
+    assert.match(navigatorSource, /ctx\.api\.markPlayed/);
+    assert.match(navigatorSource, /快速标记为已看/);
+    assert.match(navigatorSource, /e\.preventDefault\(\); e\.stopPropagation\(\); markPlayed\(ctx, item, link, check\)/);
+});
+
+test('episode range and season pickers use a translucent custom menu', () => {
+    assert.match(navigatorSource, /function picker\(label, cls, entries, value, onChange\)/);
+    assert.match(navigatorSource, /bgmui-epPickerMenu/);
+    const css = fs.readFileSync(require.resolve('../src/Emby.Plugins.Bangumi/Web/Assets/bangumi-ui.css'), 'utf8');
+    assert.match(css, /backdrop-filter:\s*blur\(18px\)/);
 });

@@ -30,12 +30,27 @@
     }
     function recommendation(items) {
         if (!items.length) return null;
+        var watched = items.filter(function (e) { return (e.UserData || {}).Played; });
+        var watchedIndexes = watched.map(function (e) { return items.indexOf(e); });
+        var lastWatchedIndex = watchedIndexes.length ? Math.max.apply(Math, watchedIndexes) : -1;
+        var latestWatchedStamp = watched.reduce(function (latest, e) {
+            return Math.max(latest, stamp(e));
+        }, 0);
         var resumable = items.filter(function (e) {
             var u = e.UserData || {};
-            return !u.Played && u.PlaybackPositionTicks > 0;
+            if (u.Played || !(u.PlaybackPositionTicks > 0)) return false;
+            var index = items.indexOf(e), playedAt = stamp(e);
+            // Emby can retain a partial position after a later episode was watched.
+            // Do not let that old residue pull the navigator backwards. A real replay
+            // is still respected when its timestamp is newer than the latest watched
+            // episode; without timestamps, episode order is the safest fallback.
+            if (!watched.length) return true;
+            if (playedAt > 0 && latestWatchedStamp > 0) return playedAt > latestWatchedStamp;
+            return index > lastWatchedIndex;
         });
-        if (resumable.length) return resumable.sort(function (a, b) { return stamp(b) - stamp(a); })[0];
-        var watched = items.filter(function (e) { return (e.UserData || {}).Played; });
+        if (resumable.length) return resumable.sort(function (a, b) {
+            return stamp(b) - stamp(a) || items.indexOf(b) - items.indexOf(a);
+        })[0];
         if (!watched.length) return items[0];
         // Some manually marked episodes have no LastPlayedDate. In that case use the last
         // watched episode in episode order, rather than jumping to an old unmarked episode 1.
@@ -193,11 +208,76 @@
         b.addEventListener("click", action);
         return b;
     }
-    function labeledSelect(label, cls) {
-        var s = node("select", cls);
-        s.setAttribute("aria-label", label);
-        s.title = label;
-        return s;
+    function picker(label, cls, entries, value, onChange) {
+        var wrap = node("div", "bgmui-epPicker " + (cls || ""));
+        var trigger = node("button", "bgmui-epPickerButton", "");
+        trigger.type = "button";
+        trigger.setAttribute("aria-label", label);
+        trigger.setAttribute("aria-haspopup", "listbox");
+        trigger.setAttribute("aria-expanded", "false");
+        trigger.title = label;
+        var menu = node("div", "bgmui-epPickerMenu");
+        menu.setAttribute("role", "listbox");
+        menu.setAttribute("aria-label", label);
+        menu.hidden = true;
+        var current = String(value);
+        function close() {
+            wrap.classList.remove("is-open");
+            trigger.setAttribute("aria-expanded", "false");
+            menu.hidden = true;
+        }
+        function open() {
+            document.querySelectorAll(".bgmui-epPicker.is-open").forEach(function (e) {
+                e.classList.remove("is-open");
+                var b = e.querySelector(".bgmui-epPickerButton");
+                var m = e.querySelector(".bgmui-epPickerMenu");
+                if (b) b.setAttribute("aria-expanded", "false");
+                if (m) m.hidden = true;
+            });
+            wrap.classList.add("is-open");
+            trigger.setAttribute("aria-expanded", "true");
+            menu.hidden = false;
+        }
+        function setCurrent(next) {
+            current = String(next);
+            var selected = entries.filter(function (e) { return String(e.value) === current; })[0] || entries[0];
+            if (selected) trigger.textContent = selected.label;
+            menu.querySelectorAll("[role=option]").forEach(function (e) {
+                var isSelected = e.dataset.value === current;
+                e.setAttribute("aria-selected", String(isSelected));
+                e.classList.toggle("is-selected", isSelected);
+            });
+        }
+        trigger.addEventListener("click", function (e) {
+            e.stopPropagation();
+            if (wrap.classList.contains("is-open")) close(); else open();
+        });
+        trigger.addEventListener("keydown", function (e) {
+            if (e.key === "Escape") { close(); return; }
+            if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+                e.preventDefault(); open();
+                var selected = menu.querySelector("[aria-selected=true]");
+                if (selected) selected.focus();
+            }
+        });
+        entries.forEach(function (entry) {
+            var option = node("button", "bgmui-epPickerOption", entry.label);
+            option.type = "button";
+            option.dataset.value = String(entry.value);
+            option.setAttribute("role", "option");
+            option.addEventListener("click", function (e) {
+                e.stopPropagation();
+                var changed = current !== String(entry.value);
+                setCurrent(entry.value); close(); trigger.focus();
+                if (changed) onChange(entry.value);
+            });
+            option.addEventListener("keydown", function (e) {
+                if (e.key === "Escape") { e.preventDefault(); close(); trigger.focus(); }
+            });
+            menu.appendChild(option);
+        });
+        wrap.appendChild(trigger); wrap.appendChild(menu); setCurrent(current);
+        return wrap;
     }
     function itemHref(ctx, item) {
         return "#!/item?id=" + encodeURIComponent(item.Id) + "&serverId=" + encodeURIComponent(ctx.api.serverId());
@@ -230,6 +310,25 @@
             if (window.BangumiUiDebug) console.warn("[bangumi-episodes] playback failed", err);
         }).then(function () {
             window.setTimeout(function () { ctx.playing = false; }, 500);
+        });
+    }
+    function markPlayed(ctx, item, card, mark) {
+        if (mark.disabled) return;
+        var userId = ctx.api.getCurrentUserId(), wasPlayed = !!(item.UserData || {}).Played;
+        var method = wasPlayed ? ctx.api.markUnplayed : ctx.api.markPlayed;
+        if (typeof method !== "function") return;
+        mark.disabled = true;
+        Promise.resolve(method.call(ctx.api, userId, [item.Id])).then(function () {
+            item.UserData = Object.assign({}, item.UserData || {}, wasPlayed ? {
+                Played: false, PlaybackPositionTicks: 0, LastPlayedDate: ""
+            } : {
+                Played: true, PlaybackPositionTicks: 0, LastPlayedDate: new Date().toISOString()
+            });
+            remember(ctx);
+            render(ctx, "card");
+        }).catch(function (err) {
+            if (window.BangumiUiDebug) console.warn("[bangumi-episodes] mark played failed", err);
+            mark.disabled = false;
         });
     }
     function imageFor(ctx, item) {
@@ -268,11 +367,15 @@
             enter.setAttribute("aria-hidden", "true");
             visual.appendChild(enter);
         }
-        if (u.Played) {
-            var check = node("span", "bgmui-epWatched", "✓");
-            check.setAttribute("aria-hidden", "true");
-            visual.appendChild(check);
-        }
+        var check = node("button", "bgmui-epWatchedToggle" + (u.Played ? " is-watched" : ""), "✓");
+        check.type = "button";
+        check.title = u.Played ? "标记为未看" : "快速标记为已看";
+        check.setAttribute("aria-label", name + "：" + check.title);
+        check.setAttribute("aria-pressed", String(!!u.Played));
+        check.addEventListener("click", function (e) {
+            e.preventDefault(); e.stopPropagation(); markPlayed(ctx, item, link, check);
+        });
+        visual.appendChild(check);
         if (!u.Played && u.PlaybackPositionTicks > 0 && item.RunTimeTicks > 0) {
             var bar = node("span", "bgmui-epProgress");
             bar.style.width = Math.min(100, u.PlaybackPositionTicks / item.RunTimeTicks * 100) + "%";
@@ -331,26 +434,23 @@
         var toolbar = node("div", "bgmui-epToolbar");
         var ranges = node("div", "bgmui-epRanges");
         if (ctx.groups.length > 1) {
-            var seasons = labeledSelect("选择季度", "bgmui-epSelect bgmui-epSeason");
-            ctx.groups.forEach(function (g) { var o = node("option", "", g.name); o.value = g.id; seasons.appendChild(o); });
-            seasons.value = ctx.group.id; seasons.dataset.control = "season";
-            seasons.addEventListener("change", function () { chooseGroup(ctx, seasons.value); render(ctx, "season"); });
+            var seasons = picker("选择季度", "bgmui-epSeason", ctx.groups.map(function (g) {
+                return { value: g.id, label: g.name };
+            }), ctx.group.id, function (value) { chooseGroup(ctx, value); render(ctx, "season"); });
+            seasons.querySelector(".bgmui-epPickerButton").dataset.control = "season";
             ranges.appendChild(seasons);
         }
         var prev = button("‹", "bgmui-epArrow", function () { turn(ctx, -1); }, "上一组分集");
         prev.setAttribute("aria-label", "上一组分集"); prev.disabled = ctx.index === 0; prev.dataset.control = "prev";
         ranges.appendChild(prev);
-        var range = labeledSelect("选择集数区间", "bgmui-epSelect");
-        for (var i = 0; i < pages; i++) {
+        var range = picker("选择集数区间", "", Array.from({ length: pages }, function (_, i) {
             var slice = items.slice(i * size, (i + 1) * size);
-            var option = node("option", "", labelOf(slice[0]) + " – " + labelOf(slice[slice.length - 1]) + " 集");
-            option.value = String(i); range.appendChild(option);
-        }
-        range.value = String(ctx.index); range.dataset.control = "range";
-        range.addEventListener("change", function () {
-            ctx.index = Number(range.value); ctx.selected = items[ctx.index * size].Id;
+            return { value: String(i), label: labelOf(slice[0]) + " – " + labelOf(slice[slice.length - 1]) + " 集" };
+        }), String(ctx.index), function (value) {
+            ctx.index = Number(value); ctx.selected = items[ctx.index * size].Id;
             remember(ctx); render(ctx, "range");
         });
+        range.querySelector(".bgmui-epPickerButton").dataset.control = "range";
         ranges.appendChild(range);
         var next = button("›", "bgmui-epArrow", function () { turn(ctx, 1); }, "下一组分集");
         next.setAttribute("aria-label", "下一组分集"); next.disabled = ctx.index >= pages - 1; next.dataset.control = "next";
@@ -358,9 +458,11 @@
 
         var actions = node("div", "bgmui-epActions");
         var recommended = recommendation(items);
-        var progress = button("回到进度 · " + labelOf(recommended), "bgmui-epResume", function () {
+        var hasResume = recommended && !(recommended.UserData || {}).Played &&
+            (recommended.UserData || {}).PlaybackPositionTicks > 0;
+        var progress = button((hasResume ? "继续观看 · " : "下一集 · ") + labelOf(recommended), "bgmui-epResume", function () {
             select(ctx, recommended.Id, true);
-        }, "定位到正在观看或接下来要看的分集");
+        }, hasResume ? "定位到未看完的分集" : "定位到接下来要看的分集");
         progress.dataset.control = "progress"; actions.appendChild(progress);
         var form = node("form", "bgmui-epJump");
         var input = node("input", "bgmui-epInput");
@@ -483,6 +585,16 @@
         try { if (!editing) run(true); }
         catch (err) { cleanup(); }
     }
+    document.addEventListener("click", function (e) {
+        if (e.target.closest && e.target.closest(".bgmui-epPicker")) return;
+        document.querySelectorAll(".bgmui-epPicker.is-open").forEach(function (pickerRoot) {
+            pickerRoot.classList.remove("is-open");
+            var trigger = pickerRoot.querySelector(".bgmui-epPickerButton");
+            var menu = pickerRoot.querySelector(".bgmui-epPickerMenu");
+            if (trigger) trigger.setAttribute("aria-expanded", "false");
+            if (menu) menu.hidden = true;
+        });
+    }, true);
     window.BangumiEpisodes = { refresh: recheck };
     window.addEventListener("hashchange", schedule);
     document.addEventListener("viewshow", schedule, true);
