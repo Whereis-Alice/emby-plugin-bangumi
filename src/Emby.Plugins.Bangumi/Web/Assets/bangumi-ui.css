@@ -249,14 +249,6 @@
     margin-bottom: 1.35em;
 }
 
-.bgmui-homeRecent .sectionTitle::after {
-    content: "›";
-    display: inline-block;
-    margin-left: .22em;
-    opacity: .72;
-    font-size: .9em;
-    transform: translateY(-.02em);
-}
 
 .bgmui-homeRecentRow {
     display: flex;
@@ -863,6 +855,7 @@
         transition: none;
     }
 }
+
 
 
 

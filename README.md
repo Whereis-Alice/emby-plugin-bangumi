@@ -23,7 +23,9 @@ TMDB 和 TheTVDB 把一部番的所有季塞进同一个条目的 `Season 1..N`�
 代价是 Bangumi 的条目模型和 Emby 的 `Series / Season / Episode` 模型并不同构，
 插件的主要复杂度都花在这个映射上（见下文「季度解析」与「集号匹配」）。
 
-## 1.2.6 视觉更新
+## 1.2.7 视觉更新
+
+- 标题箭头改为直接复用 Emby 原生 `md-icon sectionTitleMoreIcon`，修正箭头的大小、基线与间距。
 
 - 首页新增「最近观看」并与 Emby 原生媒体模块统一卡片尺寸、间距、居中标题与焦点样式。
 - 保留横向滚动、已看标记与集标题，长标题自动省略，不改变「继续观看」原生模块。
@@ -967,4 +969,6 @@ NuGet 上的 `MediaBrowser.Server.Core` / `MediaBrowser.Common` 4.9.1.90。
 ## License
 
 [MIT](LICENSE)
+
+
 

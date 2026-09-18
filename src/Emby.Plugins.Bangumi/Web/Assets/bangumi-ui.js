@@ -318,7 +318,11 @@
 
         var wrapper = el("div", "verticalSection verticalSection-cards emby-scrollbuttons-scroller bgmui-homeRecent");
         var heading = el("div", "sectionTitleContainer flex align-items-center flex-wrap-wrap sectionTitleContainer-cards padded-left padded-left-page padded-right");
-        heading.appendChild(el("h2", "sectionTitle sectionTitle-cards", "最近观看"));
+        var recentTitle = el("h2", "sectionTitle sectionTitle-cards sectionTitleText-withseeall", "最近观看");
+        heading.appendChild(recentTitle);
+        var recentMore = el("i", "md-icon sectionTitleMoreIcon secondaryText", "\ue5e1");
+        recentMore.setAttribute("aria-hidden", "true");
+        heading.appendChild(recentMore);
         wrapper.appendChild(heading);
 
         var row = el("div", "bgmui-homeRecentRow padded-top-focusscale padded-bottom-focusscale padded-left padded-left-page padded-right");
@@ -894,3 +898,5 @@
 
     whenReady();
 })();
+
+
