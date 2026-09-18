@@ -67,7 +67,8 @@ test('all watched does not jump back to the first episode; empty list is safe', 
 
 test('episode cards use Emby playback actions for one-click playback', () => {
     assert.match(navigatorSource, /Emby\.importModule\("\.\/modules\/common\/playback\/playbackactions\.js"\)/);
-    assert.match(navigatorSource, /actions\.default\.play\(\{ items: \[playbackItem\(ctx, item\)\], fullscreen: true \}\)/);
+    assert.match(navigatorSource, /var actions = module && module\.default \? module\.default : module;/);
+    assert.match(navigatorSource, /actions\.play\(\{ items: \[playbackItem\(ctx, item\)\], fullscreen: true \}\)/);
     assert.match(navigatorSource, /node\("article", "bgmui-epCard/);
     assert.match(navigatorSource, /e\.preventDefault\(\); e\.stopPropagation\(\); playEpisode\(ctx, item, link\)/);
 });

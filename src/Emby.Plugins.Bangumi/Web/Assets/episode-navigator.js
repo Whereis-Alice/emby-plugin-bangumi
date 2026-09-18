@@ -220,8 +220,12 @@
         if (ctx.playing) return;
         ctx.playing = true;
         trackSelection(ctx, item, card);
-        Emby.importModule("./modules/common/playback/playbackactions.js").then(function (actions) {
-            return actions.default.play({ items: [playbackItem(ctx, item)], fullscreen: true });
+        Emby.importModule("./modules/common/playback/playbackactions.js").then(function (module) {
+            // Emby.importModule resolves the module's default export in 4.10. Older clients
+            // may return the module namespace, so accept both shapes without hiding playback.
+            var actions = module && module.default ? module.default : module;
+            if (!actions || typeof actions.play !== "function") throw new Error("Emby playback actions unavailable");
+            return actions.play({ items: [playbackItem(ctx, item)], fullscreen: true });
         }).catch(function (err) {
             if (window.BangumiUiDebug) console.warn("[bangumi-episodes] playback failed", err);
         }).then(function () {
