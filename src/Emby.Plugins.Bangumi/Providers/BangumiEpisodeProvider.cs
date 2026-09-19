@@ -50,7 +50,13 @@ namespace Emby.Plugins.Bangumi.Providers
             return Task.FromResult<IEnumerable<RemoteSearchResult>>(new List<RemoteSearchResult>());
         }
 
-        public async Task<MetadataResult<Episode>> GetMetadata(EpisodeInfo info, CancellationToken cancellationToken)
+        public Task<MetadataResult<Episode>> GetMetadata(EpisodeInfo info, CancellationToken cancellationToken)
+            => GetMetadataCore(info, cancellationToken, false);
+
+        internal Task<MetadataResult<Episode>> GetMetadataForWatchSync(EpisodeInfo info, CancellationToken cancellationToken)
+            => GetMetadataCore(info, cancellationToken, true);
+
+        private async Task<MetadataResult<Episode>> GetMetadataCore(EpisodeInfo info, CancellationToken cancellationToken, bool strict)
         {
             var options = CurrentOptions;
             var result = new MetadataResult<Episode>
@@ -186,7 +192,9 @@ namespace Emby.Plugins.Bangumi.Providers
                 var episodes = await LoadEpisodesAsync(candidateId, isSpecial, cancellationToken).ConfigureAwait(false);
                 if (episodes.Count == 0) continue;
 
-                episode = Match(episodes, info, options, preceding, out matchedBy);
+                episode = Match(episodes, info, options, preceding, out matchedBy, strict);
+                // An ambiguous result must not fall through to a sequel with a coincidental number.
+                if (strict && matchedBy == "ambiguous") return result;
                 if (episode != null)
                 {
                     matchedSubjectId = candidateId;
@@ -209,7 +217,7 @@ namespace Emby.Plugins.Bangumi.Providers
                 var absoluteTarget = info.IndexNumber.Value + options.EpisodeIndexOffset;
                 if (absoluteTarget > preceding)
                 {
-                    var absolute = await ResolveAbsoluteAsync(candidates[0], absoluteTarget, cancellationToken)
+                    var absolute = await ResolveAbsoluteAsync(candidates[0], absoluteTarget, cancellationToken, strict)
                         .ConfigureAwait(false);
                     if (absolute != null)
                     {
@@ -426,7 +434,7 @@ namespace Emby.Plugins.Bangumi.Providers
         /// Unaired episodes are rejected, because a file that exists cannot hold one.
         /// </summary>
         private async Task<AbsoluteMatch> ResolveAbsoluteAsync(
-            int seedSubjectId, int target, CancellationToken cancellationToken)
+            int seedSubjectId, int target, CancellationToken cancellationToken, bool strict = false)
         {
             if (seedSubjectId <= 0 || target <= 0) return null;
 
@@ -437,20 +445,25 @@ namespace Emby.Plugins.Bangumi.Providers
             // A franchise of one subject was already searched by the caller.
             if (franchise.Count <= 1) return null;
 
+            AbsoluteMatch unique = null;
             foreach (var subjectId in franchise)
             {
                 var episodes = await LoadEpisodesAsync(subjectId, false, cancellationToken).ConfigureAwait(false);
                 if (episodes.Count == 0) continue;
 
-                var hit = episodes.FirstOrDefault(e => e != null && NearlyEqual(e.Sort, target) && HasAired(e));
+                var hits = episodes.Where(e => e != null && NearlyEqual(e.Sort, target) && HasAired(e)).ToList();
+                if (strict && hits.Count > 1) return null;
+                var hit = hits.FirstOrDefault();
                 if (hit == null) continue;
 
                 Verbose("Bangumi: index {0} looks like franchise numbering, sort {0} is ep {1} of subject {2}",
                     target, hit.Ep, subjectId);
-                return new AbsoluteMatch { Episode = hit, SubjectId = subjectId };
+                if (!strict) return new AbsoluteMatch { Episode = hit, SubjectId = subjectId };
+                if (unique != null && unique.Episode.Id != hit.Id) return null;
+                unique = new AbsoluteMatch { Episode = hit, SubjectId = subjectId };
             }
 
-            return null;
+            return unique;
         }
 
         /// <summary>
@@ -464,7 +477,7 @@ namespace Emby.Plugins.Bangumi.Providers
         /// </summary>
         internal static BangumiEpisode Match(
             List<BangumiEpisode> episodes, EpisodeInfo info, PluginOptions options,
-            int precedingEpisodeCount, out string matchedBy)
+            int precedingEpisodeCount, out string matchedBy, bool strict = false)
         {
             matchedBy = "none";
 
@@ -494,13 +507,15 @@ namespace Emby.Plugins.Bangumi.Providers
 
             var target = info.IndexNumber.Value + options.EpisodeIndexOffset;
 
-            var hit = Find(episodes, target, options.EpisodeNumberMode, out matchedBy);
+            var hit = Find(episodes, target, options.EpisodeNumberMode, out matchedBy, strict);
+            if (strict && matchedBy == "ambiguous") return null;
             if (hit != null) return hit;
 
             var shifted = target - precedingEpisodeCount;
             if (precedingEpisodeCount > 0 && shifted >= 1)
             {
-                hit = Find(episodes, shifted, options.EpisodeNumberMode, out matchedBy);
+                hit = Find(episodes, shifted, options.EpisodeNumberMode, out matchedBy, strict);
+                if (strict && matchedBy == "ambiguous") return null;
                 if (hit != null)
                 {
                     matchedBy = matchedBy + " -" + precedingEpisodeCount.ToString(CultureInfo.InvariantCulture);
@@ -512,12 +527,26 @@ namespace Emby.Plugins.Bangumi.Providers
         }
 
         private static BangumiEpisode Find(
-            List<BangumiEpisode> episodes, int target, EpisodeNumberMode mode, out string matchedBy)
+            List<BangumiEpisode> episodes, int target, EpisodeNumberMode mode, out string matchedBy, bool strict = false)
         {
             matchedBy = "none";
 
             Func<BangumiEpisode, bool> byEp = e => e != null && e.Ep.HasValue && NearlyEqual(e.Ep.Value, target);
             Func<BangumiEpisode, bool> bySort = e => e != null && NearlyEqual(e.Sort, target);
+
+            // Metadata can use a best-effort preference; writing somebody's watch history cannot.
+            // Explicit numbering modes remain authoritative. Auto mode requires one unique aired ID.
+            if (strict)
+            {
+                var matches = episodes.Where(e => e != null && HasAired(e) &&
+                    (mode == EpisodeNumberMode.EpisodeNumber ? byEp(e) :
+                     mode == EpisodeNumberMode.SortNumber ? bySort(e) : byEp(e) || bySort(e)))
+                    .GroupBy(e => e.Id).Select(g => g.First()).ToList();
+                if (matches.Count > 1) { matchedBy = "ambiguous"; return null; }
+                if (matches.Count == 0) return null; // No ordinal guessing for watch sync.
+                matchedBy = byEp(matches[0]) ? "ep" : "sort";
+                return matches[0];
+            }
 
             switch (mode)
             {
