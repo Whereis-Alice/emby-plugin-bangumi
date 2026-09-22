@@ -171,9 +171,22 @@ namespace Emby.Plugins.Bangumi.Providers
             }
 
             var isSpecial = info.ParentIndexNumber.HasValue && info.ParentIndexNumber.Value == 0;
-
-            var candidates = await ResolveCandidatesAsync(info, options, isSpecial, cancellationToken)
-                .ConfigureAwait(false);
+            var compactNumber = GetCompactAbsoluteNumber(info, options);
+            List<int> candidates;
+            if (compactNumber.HasValue)
+            {
+                // A synthetic season (242 -> S02E42) may already have a wrong subject ID.
+                // Start from the identified series and ignore the old episode pin entirely.
+                int seed;
+                candidates = TryGetSubjectId(info.SeriesProviderIds, out seed) ||
+                    TryGetSubjectId(info.ProviderIds, out seed)
+                    ? new List<int> { seed } : new List<int>();
+            }
+            else
+            {
+                candidates = await ResolveCandidatesAsync(info, options, isSpecial, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             if (candidates.Count == 0)
             {
                 Verbose("Bangumi has no subject candidate for episode \"{0}\" (season {1})",
@@ -192,9 +205,11 @@ namespace Emby.Plugins.Bangumi.Providers
                 var episodes = await LoadEpisodesAsync(candidateId, isSpecial, cancellationToken).ConfigureAwait(false);
                 if (episodes.Count == 0) continue;
 
-                episode = Match(episodes, info, options, preceding, out matchedBy, strict);
+                episode = compactNumber.HasValue
+                    ? MatchCompactAbsolute(episodes, compactNumber.Value, out matchedBy)
+                    : Match(episodes, info, options, preceding, out matchedBy, strict);
                 // An ambiguous result must not fall through to a sequel with a coincidental number.
-                if (strict && matchedBy == "ambiguous") return result;
+                if ((strict || compactNumber.HasValue) && matchedBy == "ambiguous") return result;
                 if (episode != null)
                 {
                     matchedSubjectId = candidateId;
@@ -214,10 +229,11 @@ namespace Emby.Plugins.Bangumi.Providers
             if (episode == null && !isSpecial && options.ResolveAbsoluteEpisodeNumbers &&
                 info.IndexNumber.HasValue)
             {
-                var absoluteTarget = info.IndexNumber.Value + options.EpisodeIndexOffset;
-                if (absoluteTarget > preceding)
+                var absoluteTarget = compactNumber ?? (info.IndexNumber.Value + options.EpisodeIndexOffset);
+                if (compactNumber.HasValue || absoluteTarget > preceding)
                 {
-                    var absolute = await ResolveAbsoluteAsync(candidates[0], absoluteTarget, cancellationToken, strict)
+                    var absolute = await ResolveAbsoluteAsync(candidates[0], absoluteTarget, cancellationToken,
+                        strict || compactNumber.HasValue)
                         .ConfigureAwait(false);
                     if (absolute != null)
                     {
@@ -236,6 +252,15 @@ namespace Emby.Plugins.Bangumi.Providers
                 return result;
             }
 
+            if (compactNumber.HasValue)
+            {
+                Logger.Info("Bangumi: verified bare episode {0} against sort {1}; correcting S{2}E{3} to S1E{0}",
+                    compactNumber, episode.Sort, info.ParentIndexNumber, info.IndexNumber);
+                info.IndexNumber = result.Item.IndexNumber = compactNumber;
+                info.ParentIndexNumber = result.Item.ParentIndexNumber = 1;
+                info.IndexNumberEnd = result.Item.IndexNumberEnd = null;
+            }
+
             var title = PickTitle(episode.Name, episode.NameCn, options);
             if (string.IsNullOrWhiteSpace(title))
             {
@@ -251,6 +276,10 @@ namespace Emby.Plugins.Bangumi.Providers
             if (options.WriteOriginalTitle && !string.IsNullOrWhiteSpace(episode.Name))
             {
                 result.Item.OriginalTitle = episode.Name;
+            }
+            else if (compactNumber.HasValue)
+            {
+                result.Item.OriginalTitle = title; // Do not preserve the old wrongly matched title.
             }
 
             if (!string.IsNullOrWhiteSpace(episode.Desc)) result.Item.Overview = episode.Desc.Trim();
@@ -295,6 +324,36 @@ namespace Emby.Plugins.Bangumi.Providers
             Verbose("Bangumi subject {0}: episode index {1} matched ep id {2} via {3}",
                 matchedSubjectId, info.IndexNumber, episode.Id, matchedBy);
             return result;
+        }
+
+        internal static int? GetCompactAbsoluteNumber(EpisodeInfo info, PluginOptions options)
+        {
+            if (info == null || !options.ParseEpisodeNumberFromFileName ||
+                !options.FixImplausibleEpisodeNumbers || !options.ResolveAbsoluteEpisodeNumbers ||
+                options.EpisodeNumberMode == EpisodeNumberMode.EpisodeNumber || options.EpisodeIndexOffset != 0 ||
+                string.IsNullOrWhiteSpace(info.Path) ||
+                (info.IndexNumberEnd.HasValue && info.IndexNumberEnd != info.IndexNumber) ||
+                TitleNormalizer.HasExplicitSeasonDirectory(Path.GetDirectoryName(info.Path))) return null;
+
+            var number = TitleNormalizer.ParseBareAbsoluteEpisodeNumber(Path.GetFileName(info.Path));
+            if (!number.HasValue) return null;
+            // Preserve explicit season numbering and unrelated manual edits. Include the repaired
+            // form so a second refresh cannot reuse a stale pin or reinterpret it as subject ep.
+            var split = info.ParentIndexNumber > 0 && info.ParentIndexNumber < 10 &&
+                info.IndexNumber >= 0 && info.IndexNumber < 100 &&
+                info.ParentIndexNumber * 100 + info.IndexNumber == number;
+            var repaired = (info.ParentIndexNumber ?? 1) == 1 && info.IndexNumber == number;
+            return split || repaired ? number : null;
+        }
+
+        internal static BangumiEpisode MatchCompactAbsolute(List<BangumiEpisode> episodes, int number,
+            out string matchedBy)
+        {
+            // The original S02E42/episode pin must never participate in this lookup.
+            var hits = episodes.Where(e => e != null && e.Id > 0 && NearlyEqual(e.Sort, number) && HasAired(e))
+                .GroupBy(e => e.Id).Select(g => g.First()).ToList();
+            matchedBy = hits.Count > 1 ? "ambiguous" : hits.Count == 1 ? "verified bare absolute sort" : "none";
+            return hits.Count == 1 ? hits[0] : null;
         }
 
         /// <summary>

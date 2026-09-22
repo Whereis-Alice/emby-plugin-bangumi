@@ -20,6 +20,7 @@ namespace Emby.Plugins.Bangumi.Web
 
     public class BangumiWatchTarget
     {
+        public int ResolverVersion { get; set; } = 2;
         public string Status { get; set; } = "unresolved";
         public string Reason { get; set; }
         public string EpisodeId { get; set; }

@@ -150,6 +150,30 @@ namespace Emby.Plugins.Bangumi.Utils
         private static readonly Regex TrailingBareNumber = new Regex(
             @"(?:^|[\s\.\-_\[\(【])(?<n>\d{1,4})(?:[vV]\d)?\s*$", RegexOptions.Compiled);
 
+        // Emby's compact SSEE parser reads "242 4K.mp4" as S02E42. Only accept an
+        // otherwise bare number plus known encode labels, never a title/date/range.
+        private static readonly Regex BareAbsoluteNumber = new Regex(
+            @"^(?<n>[1-9]\d{2})(?:[\s._\-\[\]\(\)]+(?:4K|8K|480p|576p|720p|1080[pi]|1440p|2160p|4320p|UHD|HD|HEVC|AVC|H[ .]?26[45]|x26[45]|HDR10\+?|HDR|SDR|10bit|8bit))*[\s\]\)]*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex ExplicitSeasonDirectory = new Regex(
+            @"(?:^|[\\/\s._-])(?:S\d{1,2}|Season[ ._-]*\d{1,2}|第[0-9一二三四五六七八九十百]+[季期部])(?:$|[\\/\s._-])",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        public static int? ParseBareAbsoluteEpisodeNumber(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName)) return null;
+            var text = ToHalfWidth(KnownExtension.Replace(fileName.Trim(), string.Empty));
+            var match = BareAbsoluteNumber.Match(text);
+            if (!match.Success) return null;
+            var raw = match.Groups["n"].Value;
+            var number = ParsePositiveInt(raw);
+            return IsPlausibleEpisodeNumber(raw, number) ? number : null;
+        }
+
+        public static bool HasExplicitSeasonDirectory(string directory)
+            => !string.IsNullOrWhiteSpace(directory) && ExplicitSeasonDirectory.IsMatch(directory);
+
         // Bracket-heavy release names where Emby's own resolver gives up entirely, e.g.
         // "[GM-Team][国漫][诛仙 第4季][Jade Dynasty Ⅳ][2026][01][HEVC][GB][4K]". The episode number is
         // a bracket block that contains nothing but the number.
