@@ -76,13 +76,80 @@ test('all watched does not jump back to the first episode; empty list is safe', 
     assert.equal(nav.recommendation([]), null);
 });
 
-test('episode cards use Emby playback actions for one-click playback', () => {
-    assert.match(navigatorSource, /Emby\.importModule\("\.\/modules\/common\/playback\/playbackactions\.js"\)/);
-    assert.match(navigatorSource, /var actions = module && module\.default \? module\.default : module;/);
-    assert.match(navigatorSource, /actions\.play\(\{ items: \[playbackItem\(ctx, item\)\], fullscreen: true \}\)/);
+test('episode cards use the native playback helper for one-click playback', () => {
+    assert.match(navigatorSource, /playWithEmby\(function \(path\) \{ return Emby\.importModule\(path\); \}, \{/);
+    assert.match(navigatorSource, /items: \[playbackItem\(ctx, item\)\], fullscreen: true/);
     assert.match(navigatorSource, /node\("article", "bgmui-epCard/);
     assert.match(navigatorSource, /e\.preventDefault\(\); e\.stopPropagation\(\); playEpisode\(ctx, item, link\)/);
 });
+
+const managerPath = './modules/common/playback/playbackmanager.js';
+const legacyPath = './modules/common/playback/playbackactions.js';
+for (const namespace of [false, true]) {
+    test(`playback uses the 4.10.1 native manager (${namespace ? 'namespace' : 'default export'})`, async () => {
+        const imports = [], calls = [];
+        const options = { items: [{ Id: '9893', ServerId: 'test-server', MediaType: 'Video' }], fullscreen: true };
+        const manager = { play(opts) { assert.equal(this, manager); calls.push(opts); return Promise.resolve('playing'); } };
+        const result = await nav.playWithEmby(path => {
+            imports.push(path);
+            return Promise.resolve(namespace ? { default: manager } : manager);
+        }, options);
+        assert.equal(result, 'playing');
+        assert.deepEqual(imports, [managerPath]);
+        assert.deepEqual(calls, [options]);
+        assert.equal(calls[0], options);
+    });
+}
+
+for (const failure of ['reject', 'throw', 'invalid']) {
+    test(`legacy playback fallback only on module resolution failure: ${failure}`, async () => {
+        const imports = [];
+        let plays = 0;
+        await nav.playWithEmby(path => {
+            imports.push(path);
+            if (path === legacyPath) return { play() { plays++; } };
+            if (failure === 'reject') return Promise.reject(new Error('404'));
+            if (failure === 'throw') throw new Error('loader unavailable');
+            return { default: {} };
+        }, {});
+        assert.deepEqual(imports, [managerPath, legacyPath]);
+        assert.equal(plays, 1);
+    });
+}
+
+test('module timeout falls back once; a late module never causes duplicate playback', async () => {
+    const imports = [];
+    let lateResolve, newPlays = 0, legacyPlays = 0;
+    await nav.playWithEmby(path => {
+        imports.push(path);
+        return path === managerPath ? new Promise(resolve => { lateResolve = resolve; }) :
+            { play() { legacyPlays++; } };
+    }, {}, 10);
+    lateResolve({ play() { newPlays++; } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(imports, [managerPath, legacyPath]);
+    assert.equal(legacyPlays, 1);
+    assert.equal(newPlays, 0);
+});
+
+test('both unavailable or hanging modules reject instead of locking the UI forever', async () => {
+    await assert.rejects(nav.playWithEmby(() => Promise.reject(new Error('404')), {}), /404/);
+    await assert.rejects(nav.playWithEmby(() => new Promise(() => {}), {}, 5), /timed out/);
+});
+
+for (const kind of ['intercept-cancel', 'AbortError', 'failure', 'sync-throw']) {
+    test(`native playback ${kind} never retries through another module`, async () => {
+        const imports = [];
+        let plays = 0;
+        const error = Object.assign(new Error(kind), { name: kind, errorCode: kind });
+        await assert.rejects(nav.playWithEmby(path => {
+            imports.push(path);
+            return { play() { plays++; if (kind === 'sync-throw') throw error; return Promise.reject(error); } };
+        }, {}), err => err === error);
+        assert.deepEqual(imports, [managerPath]);
+        assert.equal(plays, 1);
+    });
+}
 
 test('episode details remain a separate native route', () => {
     assert.match(navigatorSource, /var details = node\("a", "bgmui-epDetails", "详情"\)/);

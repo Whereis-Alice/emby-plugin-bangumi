@@ -90,8 +90,30 @@
             return start != null && n >= start && n <= (e.IndexNumberEnd || start);
         })[0] || null;
     }
+    function playWithEmby(importModule, options, moduleTimeoutMs) {
+        function load(path) {
+            return new Promise(function (resolve, reject) {
+                var timeout = setTimeout(function () {
+                    reject(new Error("Emby playback module load timed out"));
+                }, moduleTimeoutMs == null ? 8000 : moduleTimeoutMs);
+                Promise.resolve().then(function () { return importModule(path); }).then(function (module) {
+                    var player = module && module.default ? module.default : module;
+                    if (!player || typeof player.play !== "function") throw new Error("Emby playback module unavailable");
+                    clearTimeout(timeout);
+                    resolve(player);
+                }).catch(function (err) { clearTimeout(timeout); reject(err); });
+            });
+        }
+        // 4.10.1 removed playbackactions.js. Use the same manager as native cards:
+        // it retains EmbyToLocalPlayer request interceptors and remote-player support.
+        // Only module loading can fall back; a cancelled/failed play must never launch twice.
+        return load("./modules/common/playback/playbackmanager.js").catch(function () {
+            return load("./modules/common/playback/playbackactions.js");
+        }).then(function (player) { return player.play(options); });
+    }
     var model = { normalize: normalize, recommendation: recommendation, fingerprint: fingerprint,
-        selectInitial: selectInitial, initialSeason: initialSeason, pageSize: pageSize, pageOf: pageOf, findNumber: findNumber, labelOf: labelOf };
+        selectInitial: selectInitial, initialSeason: initialSeason, pageSize: pageSize, pageOf: pageOf, findNumber: findNumber, labelOf: labelOf,
+        playWithEmby: playWithEmby };
     if (typeof module !== "undefined" && module.exports) module.exports = model;
     if (typeof window === "undefined" || !window.document) return;
     if (window.BangumiEpisodes) return;
@@ -298,18 +320,25 @@
     }
     function playEpisode(ctx, item, card) {
         if (ctx.playing) return;
-        ctx.playing = true;
+        var request = {};
+        ctx.playing = request;
+        var message = ctx.root.querySelector(".bgmui-epMessage");
+        if (message) message.textContent = "";
         trackSelection(ctx, item, card);
-        Emby.importModule("./modules/common/playback/playbackactions.js").then(function (module) {
-            // Emby.importModule resolves the module's default export in 4.10. Older clients
-            // may return the module namespace, so accept both shapes without hiding playback.
-            var actions = module && module.default ? module.default : module;
-            if (!actions || typeof actions.play !== "function") throw new Error("Emby playback actions unavailable");
-            return actions.play({ items: [playbackItem(ctx, item)], fullscreen: true });
+        function unlock() { if (ctx.playing === request) ctx.playing = false; }
+        // Some external-player interceptors leave play() pending after launching.
+        // Release only this click's lock, without retrying or cancelling native playback.
+        var safetyTimer = window.setTimeout(unlock, 20000);
+        playWithEmby(function (path) { return Emby.importModule(path); }, {
+            items: [playbackItem(ctx, item)], fullscreen: true
         }).catch(function (err) {
+            if (err && (err.name === "AbortError" || err.errorCode === "intercept-cancel")) return;
             if (window.BangumiUiDebug) console.warn("[bangumi-episodes] playback failed", err);
+            message = ctx.root.querySelector(".bgmui-epMessage");
+            if (message) message.textContent = "播放未能启动，请刷新页面后重试，或使用页面顶部的原生播放按钮。";
         }).then(function () {
-            window.setTimeout(function () { ctx.playing = false; }, 500);
+            window.clearTimeout(safetyTimer);
+            window.setTimeout(unlock, 500);
         });
     }
     function markPlayed(ctx, item, card, mark) {
