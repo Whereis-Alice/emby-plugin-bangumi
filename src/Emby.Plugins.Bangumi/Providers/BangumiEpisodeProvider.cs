@@ -410,6 +410,21 @@ namespace Emby.Plugins.Bangumi.Providers
         private async Task<List<int>> ResolveCandidatesAsync(
             EpisodeInfo info, PluginOptions options, bool isSpecial, CancellationToken cancellationToken)
         {
+            int identifiedSeriesId;
+            if (!isSpecial && options.AutoResolveSequelSeasons &&
+                TryGetSubjectId(info.SeriesProviderIds, out identifiedSeriesId))
+            {
+                var identified = await BangumiSeasonResolver.GetIdentifiedSeasonAsync(Api,
+                    identifiedSeriesId, info.ParentIndexNumber ?? 1, cancellationToken).ConfigureAwait(false);
+                if (identified != null)
+                {
+                    // Old episode/season IDs may be derived from the previous identification.
+                    // Restrict matching (including pinned episode IDs) to the newly identified season.
+                    return await BangumiSeasonResolver.BuildEpisodeCandidatesAsync(Api, identified.Id,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+
             int pinnedSubjectId;
             if (TryGetSubjectId(info.ProviderIds, out pinnedSubjectId))
             {

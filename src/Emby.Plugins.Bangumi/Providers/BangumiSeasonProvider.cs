@@ -33,6 +33,13 @@ namespace Emby.Plugins.Bangumi.Providers
             var results = new List<RemoteSearchResult>();
             if (searchInfo == null) return results;
 
+            var identified = await IdentifiedSeriesSeasonAsync(searchInfo, cancellationToken).ConfigureAwait(false);
+            if (identified != null)
+            {
+                results.Add(ToSearchResult(identified));
+                return results;
+            }
+
             int subjectId;
             if (TryGetSubjectId(searchInfo.ProviderIds, out subjectId))
             {
@@ -79,11 +86,15 @@ namespace Emby.Plugins.Bangumi.Providers
                 return result;
             }
 
-            BangumiSubject subject = null;
-            var byId = false;
+            // Re-identifying the series must supersede stale derived season IDs. A local S02
+            // inside a folder explicitly identified as "Edgerunners 2" is that subject itself,
+            // even when Bangumi has not linked the two seasons yet.
+            var identified = await IdentifiedSeriesSeasonAsync(info, cancellationToken).ConfigureAwait(false);
+            BangumiSubject subject = identified;
+            var byId = identified != null;
 
             int subjectId;
-            if (TryGetSubjectId(info.ProviderIds, out subjectId))
+            if (subject == null && TryGetSubjectId(info.ProviderIds, out subjectId))
             {
                 subject = await Api.GetSubjectAsync(subjectId, cancellationToken).ConfigureAwait(false);
                 byId = subject != null;
@@ -147,6 +158,11 @@ namespace Emby.Plugins.Bangumi.Providers
                 {
                     result.Item.OriginalTitle = subject.Name;
                 }
+            }
+            else if (identified != null)
+            {
+                result.Item.Name = "第 " + (info.IndexNumber ?? 1).ToString(CultureInfo.InvariantCulture) + " 季";
+                if (options.WriteOriginalTitle) result.Item.OriginalTitle = subject.Name;
             }
 
             if (subject.Images != null) result.SearchImageUrl = subject.Images.Best();
@@ -215,6 +231,10 @@ namespace Emby.Plugins.Bangumi.Providers
 
             var seasonNumber = info.IndexNumber ?? 1;
 
+            var identified = await IdentifiedSeriesSeasonAsync(info, cancellationToken).ConfigureAwait(false);
+            if (identified != null)
+                return new SeasonResolution(new List<int> { identified.Id }, "identified series season");
+
             // Season 0 holds specials, which live inside the main subject on Bangumi.
             if (seasonNumber <= 1)
             {
@@ -250,8 +270,8 @@ namespace Emby.Plugins.Bangumi.Providers
         }
 
         /// <summary>
-        /// Searches for "&lt;series&gt; 第N季". Accepted only when the hit is part of the sequel chain,
-        /// or when the series has no chain at all, because search alone happily returns a spin off.
+        /// Searches for "&lt;series&gt; 第N季". Outside the chain, both the base title and season
+        /// must match; a season number alone can return an entirely unrelated franchise.
         /// </summary>
         private async Task<SeasonResolution> SearchForSeasonAsync(
             SeasonInfo info, int seasonNumber, int seriesSubjectId,
@@ -280,7 +300,8 @@ namespace Emby.Plugins.Bangumi.Providers
                 // The hit must at least agree about which season it is, otherwise a search for
                 // "X 第3季" that only matched "X" would be accepted as season 3.
                 var marker = BangumiSeasonResolver.SeasonMarkerOf(hit.Name, hit.NameCn);
-                if (!marker.HasValue || marker.Value != seasonNumber) continue;
+                if ((!marker.HasValue || marker.Value != seasonNumber) &&
+                    !BangumiSeasonResolver.RepresentsIdentifiedSeason(hit.Name, hit.NameCn, seasonNumber)) continue;
 
                 if (inChain)
                 {
@@ -289,10 +310,25 @@ namespace Emby.Plugins.Bangumi.Providers
                     if (fromChain != null) return fromChain;
                 }
 
+                if (!BangumiSeasonResolver.IsStrongSeasonSearchMatch(chain == null ? null : chain.FirstOrDefault(), hit, seasonNumber))
+                {
+                    Verbose("Bangumi rejected unrelated season search result {0} ({1}) for {2}",
+                        hit.Id, hit.NameCn ?? hit.Name, info.SeriesName);
+                    continue;
+                }
+
                 return new SeasonResolution(new List<int> { hit.Id }, "search");
             }
 
             return null;
+        }
+
+        private async Task<BangumiSubject> IdentifiedSeriesSeasonAsync(SeasonInfo info, CancellationToken cancellationToken)
+        {
+            int seriesSubjectId;
+            if (!CurrentOptions.AutoResolveSequelSeasons || !TryGetSubjectId(info.SeriesProviderIds, out seriesSubjectId)) return null;
+            return await BangumiSeasonResolver.GetIdentifiedSeasonAsync(Api, seriesSubjectId,
+                info.IndexNumber ?? 1, cancellationToken).ConfigureAwait(false);
         }
     }
 }

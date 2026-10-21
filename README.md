@@ -23,6 +23,13 @@ TMDB 和 TheTVDB 把一部番的所有季塞进同一个条目的 `Season 1..N`�
 代价是 Bangumi 的条目模型和 Emby 的 `Series / Season / Episode` 模型并不同构，
 插件的主要复杂度都花在这个映射上（见下文「季度解析」与「集号匹配」）。
 
+## 1.3.3 季度归属纠错
+
+- Bangumi 缺少续集关联时，季度搜索兜底必须同时匹配作品主体标题、类型和季号，不再仅凭「第二季」接受其他作品。
+- 独立识别为后续季的剧集（例如 `Cyberpunk: Edgerunners 2`）与本地 `S02` 对应时，优先使用这个已识别条目，纠正先前派生的错误季度及分集 ID；普通标题里的数字不参与全局季号解析。
+- 保留分割季度的多条目映射、连续集号和关闭自动季度解析时的手动映射。WatchTarget 使用相同纠错规则，`ResolverVersion=3`。
+- 升级后对受影响的季度和分集刷新元数据即可，不需要改媒体文件名或观看记录。
+
 ## 1.3.2 播放兼容修复
 
 - Emby 4.10.1 移除了旧 `playbackactions.js`，增强选集改用原生 `playbackmanager.js`，保留 EmbyToLocalPlayer / PotPlayer 的播放拦截链路。

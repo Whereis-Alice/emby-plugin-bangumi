@@ -97,6 +97,53 @@ namespace Emby.Plugins.Bangumi.Providers
             @"2nd\s*cour|second\s*cour|part\s*(?:2|two|ii|２)|後期|后期|下巻|下卷|下半)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex TrailingSeasonNumber = new Regex(@"\s+(?<n>[1-9]\d?)$", RegexOptions.Compiled);
+        private static readonly Regex TitleKeyNoise = new Regex(@"[^\p{L}\p{N}]", RegexOptions.Compiled);
+
+        // A bare suffix is considered only for an already identified subject and a known local
+        // season. Do not change general title parsing: numbers in Persona 5 / Steins;Gate 0 are titles.
+        internal static bool RepresentsIdentifiedSeason(string name, string nameCn, int seasonNumber)
+        {
+            var marker = SeasonMarkerOf(name, nameCn);
+            if (marker.HasValue) return marker.Value == seasonNumber;
+            return new[] { name, nameCn }.Any(title =>
+            {
+                var match = TrailingSeasonNumber.Match(TitleNormalizer.Clean(title) ?? string.Empty);
+                return match.Success && int.Parse(match.Groups["n"].Value,
+                    System.Globalization.CultureInfo.InvariantCulture) == seasonNumber;
+            });
+        }
+
+        internal static async Task<BangumiSubject> GetIdentifiedSeasonAsync(
+            BangumiApiClient api, int seriesSubjectId, int seasonNumber, CancellationToken cancellationToken)
+        {
+            if (api == null || seriesSubjectId <= 0 || seasonNumber <= 1) return null;
+            var subject = await api.GetSubjectAsync(seriesSubjectId, cancellationToken).ConfigureAwait(false);
+            return subject != null && RepresentsIdentifiedSeason(subject.Name, subject.NameCn, seasonNumber)
+                ? subject : null;
+        }
+
+        // With missing sequel relations, "第2季" alone is no evidence of franchise identity.
+        // Require the same normalized base title in either language before trusting a search hit.
+        internal static bool IsStrongSeasonSearchMatch(SubjectChainEntry root, BangumiSubject hit, int seasonNumber)
+        {
+            if (root == null || hit == null || hit.Id <= 0 || hit.Id == root.Id || hit.Type != root.Type ||
+                !RepresentsIdentifiedSeason(hit.Name, hit.NameCn, seasonNumber)) return false;
+            var rootTitles = new[] { root.Name, root.NameCn }.Select(t => SeasonTitleKey(t, seasonNumber)).Where(t => t.Length >= 2);
+            var hitTitles = new[] { hit.Name, hit.NameCn }.Select(t => SeasonTitleKey(t, seasonNumber)).Where(t => t.Length >= 2);
+            return rootTitles.Intersect(hitTitles, StringComparer.Ordinal).Any();
+        }
+
+        private static string SeasonTitleKey(string title, int seasonNumber)
+        {
+            var clean = TitleNormalizer.Clean(title);
+            int? marker;
+            var bare = TitleNormalizer.StripSeason(clean, out marker) ?? string.Empty;
+            if (!marker.HasValue && RepresentsIdentifiedSeason(title, null, seasonNumber))
+                bare = TrailingSeasonNumber.Replace(bare, string.Empty);
+            return TitleKeyNoise.Replace(TitleNormalizer.ToHalfWidth(bare).ToLowerInvariant(), string.Empty);
+        }
+
         /// <summary>
         /// Walks the <c>续集</c> chain starting at <paramref name="rootId"/>. The root itself is the
         /// first element. Cycles are impossible to rule out in user edited data, hence the visited set.
@@ -166,6 +213,8 @@ namespace Emby.Plugins.Bangumi.Providers
             if (chain == null || chain.Count == 0) return null;
 
             var index = chain.FindIndex(e => e != null && e.SeasonMarker.HasValue && e.SeasonMarker.Value == seasonNumber);
+            if (index < 0 && chain[0] != null &&
+                RepresentsIdentifiedSeason(chain[0].Name, chain[0].NameCn, seasonNumber)) index = 0;
             if (index < 0) return null;
 
             return Collect(chain, index, "chain marker");
